@@ -1,5 +1,5 @@
 {
-  "_comment": "plan-apply input. Money in ACCOUNT currency; relative paths resolve from this file's folder. Remove keys you don't need. Replace example.com, ces_REPLACE_ME and the copy with yours.",
+  "_comment": "plan-apply input. Money in ACCOUNT currency; relative paths resolve from this file's folder. Remove keys you don't need. Replace example.com, ces_REPLACE_ME and the copy with yours. UTM: the FULL template goes on each ad group (campaign vs ad-group precedence is unverified — never split it across both levels).",
   "campaign": {
     "name": "Acme kurz — podzim 2026",
     "status": "paused",
@@ -12,7 +12,6 @@
     "conversion_event_setting_ids": [
       "ces_REPLACE_ME"
     ],
-    "query_string_template": "utm_source=chatgpt&utm_medium=cpc&utm_campaign=acme-podzim",
     "description": "Pilot: situační sestavy A (styl C – otázky) a G (styl K – klíčovky), stejné reklamy"
   },
   "image_file": "card-1200.png",
@@ -32,7 +31,7 @@
       "key": "A",
       "name": "A · situace (C – otázky)",
       "hints_file": "hints-A.txt",
-      "query_string_template": "utm_content=A-otazky",
+      "query_string_template": "utm_source=chatgpt&utm_medium=cpc&utm_campaign=acme-podzim&utm_content=A-otazky",
       "ads": [
         {
           "name": "A1 čas",
@@ -55,7 +54,7 @@
         "naučit se AI",
         "online kurz AI nástroje"
       ],
-      "query_string_template": "utm_content=G-control",
+      "query_string_template": "utm_source=chatgpt&utm_medium=cpc&utm_campaign=acme-podzim&utm_content=G-control",
       "ads": [
         {
           "name": "G1 čas",

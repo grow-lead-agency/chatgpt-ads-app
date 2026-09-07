@@ -20,7 +20,7 @@ Jak se API chová podle oficiální dokumentace (developers.openai.com/ads, Open
 
 - Hierarchie **Campaign → Ad group → Ad**. Kampaň drží budget, časování a targeting; ad group bidding + context hints (+ product set); ad drží kreativu.
 - Stavy `active` / `paused` / `archived` (create jen active|paused). Přechody: `POST …/activate|pause|archive` nebo `status` v update. **Archive je nevratný a neexistuje delete** (kromě spend limit window a lead-sync subscription).
-- Ad doručuje jen když **ad, ad group i kampaň jsou active**, `review_status == approved`, účet má **schválený brand review** (typicky chybí favicon → `missing_favicon`) a platební metodu. Kódy proč nedoručuje: `serving_issues[].code` na campaign/ad group/ad (`include[]=serving_issues`), např. `ad_account_brand_review_missing_favicon`, `campaign_budget_exhausted`, `landing_page_crawl_issue`, `policy_country_targeting_blocked`, `reserved_query_params_present`, `ad_over_18_only`.
+- Ad doručuje jen když **ad, ad group i kampaň jsou active**, `review_status == approved`, účet má **schválený brand review** (typicky chybí favicon → `missing_favicon`) a platební metodu. Kódy proč nedoručuje: `serving_issues[].code` na campaign/ad group/ad (`include[]=serving_issues`), např. `ad_account_brand_review_missing_favicon`, `campaign_budget_exhausted`, `landing_page_crawl_issue`, `policy_country_targeting_blocked`, `reserved_query_params_present`, `ad_over_18_only`. **Očekávané stavy, ne závady** (viděno živě): `campaign_not_active`, `ad_group_not_active`, `ad_not_active`, `campaign_not_started` (něco v hierarchii je pozastavené — CLI vše zakládá paused) a `ad_in_review` (minuty po create/update). `ad-review` i `pulse` je z problémů vyřazují.
 - Limity per účet (self-serve): 5 000 nearchivovaných kampaní, 5 000 ad groups, 5 000 active+paused ads.
 - Listy mají server-side filtr jen `name` (min 3 znaky) a řazení `order`; **status filtr neexistuje** → CLI filtruje lokálně po načtení všeho (cursor `after` = `last_id`, `has_more`, `limit` ≤ 500).
 
@@ -53,7 +53,7 @@ Jak se API chová podle oficiální dokumentace (developers.openai.com/ads, Open
 - **Kanonická jména polí vs. wire klíče**: požádáš `campaign.spend`, dostaneš `spend` (příklady) nebo `campaign_spend` (schema `InsightItemBody` má obě varianty). CLI čte obě (`metric()`).
 - Metriky: impressions, clicks, spend, ctr, cpc, cpm; metadata `campaign.name/status/start_time/end_time/budget.*`, `ad.title/copy/link/name/status/review_status`. Atribuční pole: `order_created_attributed_sales`, `order_created_roas`, `cpa`, `post_click_cvr` (stará `attributed_sales_*`/`roas` deprecated, odstranění 2026-08-17).
 - `limit` 1–2000 (default 20), cursor `after`/`before`. `filters[]` operátory `IN|GREATER_THAN|LESS_THAN`. Segmenty `product|country|device` (jen zapnuté účty, granularita none/daily/monthly). `includes[]=zero_impression_items` (bez segmentu) nebo `zero_impression_products` (segment product first).
-- **Konverze**: `POST /conversions/insights` (`aggregation_level`, `time_ranges`, `entity_ids`, `time_granularity none|daily`, `breakdown device|country`). `conversions == click_through_conversions`; view-through je zvlášť (1-day okno, jen reporting).
+- **Konverze**: `POST /conversions/insights` (`aggregation_level`, `time_ranges`, `entity_ids`, `time_granularity none|daily`, `breakdown device|country`, `group_by_entity`). `conversions == click_through_conversions`; view-through je zvlášť (1-day okno, jen reporting). **Ověřeno živě 2026-09-07:** `group_by_entity` má na serveru default **true** a pak je `entity_ids` povinné (jinak 400 `entity_ids must be provided when group_by_entity is true`); `group_by_entity: false` vrátí **jeden** řádek s `entity_id` = ad account (součet); `entity_ids` = seznam id kampaní + `group_by_entity: true` → řádek per kampaň. `time_ranges` musí být pole **JSON stringů** (objekt → 400 `invalid_type`).
 
 ## Targeting
 
@@ -150,12 +150,24 @@ Jak se API chová podle oficiální dokumentace (developers.openai.com/ads, Open
 - `Idempotency-Key` chování při skutečném retry, `Retry-After` u 429 (žádný 429 zatím nenastal).
 - `until=today` u insights; `image_crop` jiný než celý; `price` na chat_card; WebP upload.
 - Zda `strategy: maximize_clicks` jde poslat přes API bez `max_bid_micros` (UI to tak vytvořilo; API přijalo `fixed_bid` + bid).
-- Precedence `query_string_template` kampaň vs. ad group vs. ad.
+- Precedence `query_string_template` kampaň vs. ad group vs. ad. **Do ověření: celá šablona (utm_source/medium/campaign + utm_content) na sestavu, kampaňovou nepoužívat** — sestavová funguje samostatně (měřeno v GA4 v pilotu), skládání obou je hazard (sestavová může kampaňovou celou nahradit). CLI na kombinaci varuje.
 - Bulk API zápis (`validate_only`), CAPI klíč (`POST /conversions/api_keys`), `POST /conversions/pixels` na self-serve.
 
 ## Poznámky z ostrého provozu
 
 Sem zapisuj, co se při reálném používání rozbilo nebo chovalo jinak, než CLI/docs tvrdí (datum, příkaz, `x-request-id`, co API vrátilo, co jsme čekali). Opravy → CHANGELOG.
+
+### 2026-09-07 — první týden provozu (dva self-serve účty, optimalizace pilotů + příprava větší kampaně) → opraveno v 1.4.0
+
+- 🔴 `plan-apply --file plan.json --confirm` (relativní cesta) spadl **před založením kampaně**: stav se odvodil jako `plan.state.json` (bez adresáře) a `os.makedirs("")` vyhodil `FileNotFoundError`. Dry-run stav nezapisuje, takže prošel. Fix: `_write_json_atomic` cestu normalizuje (`abspath`).
+- 🟠 `pulse` hlásil „1 ad(s) not approved / with serving issues“, zatímco `ad-review` na témže účtu říkal 18/18 approved: reklamy v záměrně pozastavené sestavě nesou `ad_group_not_active`. Fix: společná klasifikace v `common.ad_attention` (pauza v hierarchii + `ad_in_review` = očekávané stavy), `pulse` hlásí zvlášť ⚠ / ℹ / „jen pauza“.
+- 🟠 `ad-review` dal 12 čerstvě založených reklam (`paused`, `in_review`, kódy `ad_not_active, ad_in_review`) pod „Problems“ — `ad_in_review` nebyl mezi očekávanými kódy. Fix: tamtéž; JSON řádky nesou `_attention`.
+- 🟠 `pulse` → `(conversions: HTTP 400 … entity_ids must be provided when group_by_entity is true)` při každém běhu. Server defaultuje `group_by_entity=true`. Fix: `pulse` posílá `false` (součet za účet); `conversion-insights` totéž bez `--ids`, s `--ids`/`--group-by-entity` posílá `entity_ids`. Ověřeno na obou účtech.
+- 🟡 `plan-apply` při opakovaném běhu tiše přeskočil objekty ze stavu — úprava textu reklamy nebo hintů v plánu se nikam nezapsala a CLI nic neřeklo („resumable“ sváděl k domněnce, že běh plán sesynchronizuje). Fix: rerun čte detaily, rozdíly hlásí (↻), `--update-existing` je zapíše (nikdy `status`).
+- 🟡 Precedence UTM šablony kampaň vs. sestava zůstává neověřená, přitom rozhoduje o měření. Pilot má celou šablonu na sestavě a v GA4 se měří správně. Fix: doporučení „celá šablona na sestavu“ v playbooku/skillu/`plan-example.json`, lint varuje na kombinaci.
+- 🟡 Skill citoval bid 3–5 USD/klik jako „sweet spot“ bez kontextu — je to kalibrace OpenAI pro US trh; na levnějším trhu (CZ/SK) doručují i bidy kolem 1 EUR a příliš nízký bid doručování prakticky zastaví. Fix: playbook §4 + skill (začít níž, po 48 h zkontrolovat imprese).
+- ⚪ Příkazy `adgroup-*` vs. flag `--ad-group-id` → alias `--adgroup-id`.
+- Není chyba appky: `spend_limit_windows` a `negative_keywords` → 404 (nenasazené endpointy); report „na jaké konverzace se reklama spárovala“ platforma neposkytuje.
 
 ### 2026-09-02 — první ostrý zápis (pilot: 1 kampaň, 7 ad groups, 18 ads)
 

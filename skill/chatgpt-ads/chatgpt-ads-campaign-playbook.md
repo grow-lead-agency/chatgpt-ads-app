@@ -92,7 +92,7 @@ Account-level **negative keywords** exist in the spec but were not deployed on s
 ## 4. Bids and budgets
 
 - Second-price auction weighted by relevance — the highest bid does not simply win.
-- Recommended max CPC **$3–5** (below $3 Ads Manager warns you will get few impressions) **(Help Center)**. The API does **not** enforce a minimum (1 € was accepted) — if you start below the recommendation, check impressions after 48 h and raise before judging the channel. Bids are per event in micros: `--max-bid 4` = 4 USD per click; CPM via `--max-cpm`.
+- Recommended max CPC **$3–5** (below $3 Ads Manager warns you will get few impressions) **(Help Center)** — treat this as a **US-market calibration**, not a universal floor. The API does **not** enforce a minimum (1 € was accepted). **Cheaper markets (CZ/SK, practice from the first weeks):** bids around 1 EUR per click deliver normally and clear well below the bid (second-price auction), while a bid set far too low makes delivery collapse to a trickle — the failure mode is *no impressions*, not *expensive clicks*. Recipe: start below the US figure when the market is cheap, check impressions after 48 h, raise in steps only if delivery is thin, and judge the channel only once it delivers. Bids are per event in micros: `--max-bid 4` = 4 USD per click; CPM via `--max-cpm`.
 - Minimum daily budget: **25 USD** (US table); **15 € on a EUR account (practice, first Czech setup)**. Daily spend can reach **2× the daily budget** on a given day; the weekly total holds.
 - "Maximize results" automatic bidding exists in Ads Manager (API `strategy: maximize_clicks | maximize_conversions`) — feature availability is per account.
 - Budget is a campaign object replaced as a whole; the spend limit window is the account-level cap.
@@ -103,7 +103,7 @@ Account-level **negative keywords** exist in the spec but were not deployed on s
 
 **Setup order (Ads Manager → Tools → Conversions, or API):** 1) data source = pixel (`pixel-create`) → 2) conversion event = event setting (`event-setting-create`) → 3) implement on the site (pixel snippet / CAPI) → 4) **link the event to the campaign** (`campaign-create/update --conversion-event-setting-id`). Step 4 is the one people forget: the event then collects data the campaign never sees. `conversion-check` audits all four; `pulse` warns about active campaigns with no linked event.
 
-**UTM convention** (the API appends its own `oppref`; UTMs are yours): put `utm_source=chatgpt&utm_medium=cpc&utm_campaign=<slug>` on the campaign `query_string_template` and **`utm_content=<ad-group-key>` on each ad group** (ad group = targeting variant, verified to persist). GA4 files this under *Paid Other* unless you map the source. Precedence campaign vs ad group template is not yet verified — keep the campaign one generic.
+**UTM convention** (the API appends its own `oppref`; UTMs are yours): put the **whole template on each ad group** — `utm_source=chatgpt&utm_medium=cpc&utm_campaign=<slug>&utm_content=<ad-group-key>` in the ad group's `query_string_template` (ad group = targeting variant; verified to persist and to measure correctly in GA4). **Leave the campaign `query_string_template` empty.** Precedence campaign vs ad group is not verified; if the ad-group template replaced the campaign one entirely, `utm_source/medium/campaign` would vanish and the channel breakdown with it — so do not split the template across the two levels (the CLI warns when both are set). GA4 files this under *Paid Other* unless you map the source.
 
 **Pixel implementation gotchas (not in the Ads Manager help):**
 - The Pixel is injected client-side (GTM etc.) — `curl`/HTML checks won't see it; verify with `conversion-events --pid …` (the debug stream shows `contents[0].id` with the full landing query incl. `oppref`).
@@ -134,7 +134,7 @@ Account-level **negative keywords** exist in the spec but were not deployed on s
 
 ## 8. Brief → setup template
 
-The fastest way from brief to account is **one plan file** → `plan-apply --file plan.json` (dry-run prints the whole tree with copy lengths) → `--confirm` (sequential, idempotent, resumable via `plan.state.json`). Template: `docs/plan-example.json` in the app repo.
+The fastest way from brief to account is **one plan file** → `plan-apply --file plan.json` (dry-run prints the whole tree with copy lengths) → `--confirm` (sequential, idempotent, resumable via `plan.state.json`). Template: `docs/plan-example.json` in the app repo. Editing the plan later: a re-run only reports what differs from the live objects (↻); `--update-existing` applies it (never `status`; creative changes re-trigger review).
 
 ```
 Project: <name>            Market: <countries>      Currency (account): <…>
@@ -144,12 +144,12 @@ Landing: <public URL> (landing-check ✅, oppref ✅, OAI-AdsBot ✅)
 Measurement: pixel <id> / CAPI key ✅ / event setting <ces_…> (dedup by event id) → LINKED to every campaign ✅
 Site: consent hook before init ✅   CSP allows bzrcdn.openai.com + bzr.openai.com ✅
 
-Campaign query_string_template: utm_source=chatgpt&utm_medium=cpc&utm_campaign=<slug>
-Ad group A — <intent 1>    bid: <…>/click   utm_content=A-<slug>
+Campaign query_string_template: (none — the full template lives on the ad groups)
+Ad group A — <intent 1>    bid: <…>/click   query_string_template: utm_source=chatgpt&utm_medium=cpc&utm_campaign=<slug>&utm_content=A-<slug>
   hints (situations, 20–60): …
   ads (3–5 angles): title ≤16 | body ≤32 | image (no text, no logo) | URL
-Ad group B — <intent 2> …  utm_content=B-<slug>
-Ad group G — control (keyword-style hints, SAME ads) …  utm_content=G-control
+Ad group B — <intent 2> …  …&utm_content=B-<slug>
+Ad group G — control (keyword-style hints, SAME ads) …  …&utm_content=G-control
 Negative keywords (account): …
 Evaluation: CAC vs other channels after ≥ 2 weeks; weekly review of ad-review + pulse.
 ```

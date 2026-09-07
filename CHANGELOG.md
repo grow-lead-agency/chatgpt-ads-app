@@ -2,6 +2,26 @@
 
 Všechny podstatné změny v tomto projektu. Formát vychází z [Keep a Changelog](https://keepachangelog.com/), verzování je [SemVer](https://semver.org/) (verze žije v `oaiads/__init__.py`).
 
+## [1.4.0] — 2026-09-07 — Nálezy z týdne ostrého provozu 🔧
+
+Reakce na osm nálezů z prvního týdne provozu na dvou účtech (optimalizace pilotů, příprava větší kampaně). Detail v `docs/api-notes.md → Poznámky z ostrého provozu → 2026-09-07`.
+
+### Opraveno
+- **`plan-apply --file plan.json --confirm` padal dřív, než něco vytvořil** (relativní cesta → `plan.state.json` bez adresáře → `os.makedirs("")` → `FileNotFoundError`). Suchý běh stav nezapisuje, takže prošel; spadl až ostrý běh. Zápis stavu teď cestu normalizuje; test na holý název souboru.
+- **`pulse` hlásil falešný poplach** u reklam v záměrně pozastavené sestavě (`ad_group_not_active`), zatímco `ad-review` na témže účtu říkal „vše schválené“. Oba příkazy teď sdílejí jednu klasifikaci: `campaign_not_active`, `ad_group_not_active`, `ad_not_active`, `campaign_not_started` a `ad_in_review` jsou očekávané stavy, ne problémy. `pulse` hlásí zvlášť ⚠ zamítnuté / skutečné serving issues, ℹ čeká na review a „neběží jen kvůli pauze“.
+- **`ad-review` řadil čerstvě založené reklamy pod „Problems“** (kód `ad_in_review` nebyl mezi očekávanými) — teď jsou ve „Waiting for review“; JSON řádky nesou `_attention: problem|waiting`.
+- **`pulse` volal konverze s HTTP 400** (`entity_ids must be provided when group_by_entity is true` — server defaultuje `group_by_entity=true`). Posílá `group_by_entity: false` = jeden součtový řádek za účet. Stejně `conversion-insights` bez `--ids`; s `--ids`, nebo s `--group-by-entity` (bez `--ids` si vylistuje nearchivované objekty dané úrovně), = řádek per entita. Ověřeno živě na dvou účtech.
+
+### Přidáno
+- **`plan-apply` při opakovaném běhu porovná plán s živými objekty** (přečte detaily) a každý rozdíl vypíše (↻). Nic existujícího nemění, dokud nedostane **`--update-existing`** — pak sesynchronizuje název, budget / end / targeting / napojené eventy, bidding (celý objekt, živé klíče zachová), hints, UTM šablonu a kreativu (merge s živou; nový obrázek nahraje jednou pro všechny reklamy). `status` se nikdy nesynchronizuje (aktivace a pauza zůstávají explicitní `*-activate` / `*-pause`); změna kreativy znovu spouští review (CLI varuje). Bez flagu dry-run i `--confirm` řeknou, kolik objektů se liší — dřív se změny v plánu tiše ignorovaly.
+- Alias `--adgroup-id` pro `--ad-group-id` (příkazy jsou `adgroup-*`, flag byl jen dlouhý tvar).
+- Lint: `plan-apply` i `adgroup-create` varují, když má UTM šablonu kampaň i sestava (precedence neověřená; sestavová šablona může kampaňovou celou nahradit a `utm_source/medium/campaign` zmizí).
+
+### Dokumentace
+- **UTM**: celá šablona (`utm_source`/`utm_medium`/`utm_campaign` + `utm_content`) patří na sestavu; kampaňová se nepoužívá, dokud se precedence neověří (playbook §5 a §8, skill, `docs/plan-example.json`).
+- **Bidy**: doporučení OpenAI 3–5 USD/klik je kalibrace pro americký trh; na levnějších trzích (CZ/SK) doručují i bidy kolem 1 EUR, příliš nízký bid doručování prakticky zastaví → začít níž a po 48 h zkontrolovat imprese (playbook §4, skill).
+- api-notes: `group_by_entity`, `time_ranges` jako JSON stringy, očekávané serving kódy, zápis z provozu 2026-09-07.
+
 ## [1.3.2] — 2026-09-03 — Úklid před zveřejněním 🧹
 
 ### Změněno

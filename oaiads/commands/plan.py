@@ -4,6 +4,11 @@ campaign → ad groups (hints, bid, UTM) → ads (shared or per-ad image). Dry-r
 everything and prints the tree; nothing is sent. --confirm creates objects sequentially, each with
 its own Idempotency-Key, and records progress in <plan>.state.json so an interrupted run resumes
 (objects already created are skipped, keys are reused). Example plan: docs/plan-example.json.
+
+Re-runs: objects recorded in the state file are compared with the live objects (details are read)
+and every difference is reported (↻). Nothing existing is changed unless --update-existing is given;
+then name/budget/end/targeting/bidding/hints/UTM/creative are synced — `status` never is (activation
+and pausing stay explicit *-activate / *-pause decisions), and creative changes re-trigger review.
 """
 
 from __future__ import annotations
@@ -216,6 +221,113 @@ def _ad_body(a: dict, defaults: dict, shared_image: dict | None, base_dir: str, 
 
 
 # ---------------------------------------------------------------------------
+# Re-run sync: compare plan bodies with the live objects
+# ---------------------------------------------------------------------------
+
+# Keys the plan controls on each object type. `status` is deliberately absent: re-running a plan must
+# never pause an activated object (or activate a paused one). Immutable/structural campaign fields
+# (bidding_type, mode, billing_event_type, objective, product_feed_id, business_agent_id) are not synced.
+CAMPAIGN_SYNC_KEYS = ("name", "description", "budget", "start_time", "end_time", "targeting",
+                      "conversion_event_setting_ids", "landing_page_configuration")
+ADGROUP_SYNC_KEYS = ("name", "description", "bidding_config", "context_hints", "product_set", "landing_page_configuration")
+AD_SYNC_KEYS = ("name", "creative", "landing_page_configuration")
+_BIDDING_KEYS = ("billing_event_type", "max_bid_micros", "strategy", "custom_audience_bid_multipliers")
+_CREATIVE_KEYS = ("type", "title", "body", "price", "target_url", "file_id", "image_crop")
+PENDING_FILE = "<uploaded on --confirm>"
+
+
+def _subset_equal(plan_val, cur_val) -> bool:
+    """True when everything the plan specifies matches the live value (extra API fields are ignored;
+    lists of scalars compare as sets — hint/id order is not meaningful)."""
+    if isinstance(plan_val, dict):
+        return isinstance(cur_val, dict) and all(_subset_equal(v, cur_val.get(k)) for k, v in plan_val.items())
+    if isinstance(plan_val, list):
+        if not isinstance(cur_val, list) or len(plan_val) != len(cur_val):
+            return False
+        if all(not isinstance(x, (dict, list)) for x in plan_val + cur_val):
+            return sorted(map(str, plan_val)) == sorted(map(str, cur_val))
+        return all(_subset_equal(a, b) for a, b in zip(plan_val, cur_val))
+    return plan_val == cur_val
+
+
+def _diff(body: dict, current: dict, keys) -> dict:
+    """{key: plan value} for plan-controlled keys whose plan value differs from the live object."""
+    return {k: body[k] for k in keys if k in body and not _subset_equal(body[k], current.get(k))}
+
+
+def _merged_bidding(current: dict | None, plan_bc: dict) -> dict:
+    """bidding_config is replaced whole on update → keep live keys the plan does not set."""
+    base = {k: v for k, v in (current or {}).items() if k in _BIDDING_KEYS}
+    return {**base, **plan_bc}
+
+
+def _merged_creative(current: dict | None, plan_creative: dict) -> dict:
+    """creative is replaced whole on update → keep live keys the plan does not set (never the pending placeholder)."""
+    base = {k: v for k, v in (current or {}).items() if k in _CREATIVE_KEYS and v is not None}
+    overlay = {k: v for k, v in plan_creative.items() if not (k == "file_id" and v == PENDING_FILE)}
+    return {**base, **overlay}
+
+
+def _compute_sync(state: dict, campaign_body: dict | None, groups: list) -> dict:
+    """Read the live objects recorded in the state and diff them against the plan. Reads only."""
+    created = state["created"]
+    sync: dict = {"campaign": None, "ad_groups": {}, "ads": {}, "unreadable": [], "current": {}}
+
+    def read(path: str, label: str):
+        obj = api._api_call("GET", path, soft=True)
+        if not isinstance(obj, dict) or "_error" in obj:
+            sync["unreadable"].append(label)
+            return None
+        sync["current"][label] = obj
+        return obj
+
+    if campaign_body and created.get("campaign"):
+        cur = read(f"/campaigns/{created['campaign']}", "campaign")
+        if cur is not None:
+            d = _diff(campaign_body, cur, CAMPAIGN_SYNC_KEYS)
+            sync["campaign"] = d or None
+    for g in groups:
+        gid = created["ad_groups"].get(g["key"])
+        if gid:
+            cur = read(f"/ad_groups/{gid}", g["key"])
+            if cur is not None:
+                d = _diff(g["body"], cur, ADGROUP_SYNC_KEYS)
+                if "bidding_config" in d:
+                    d["bidding_config"] = _merged_bidding(cur.get("bidding_config"), g["body"]["bidding_config"])
+                if d:
+                    sync["ad_groups"][g["key"]] = d
+        for a in g["ads"]:
+            aid = created["ads"].get(a["key"])
+            if not aid:
+                continue
+            cur = read(f"/ads/{aid}", a["key"])
+            if cur is None:
+                continue
+            body = dict(a["body"])
+            creative = dict(body["creative"])
+            if a["pending"]:
+                cache_key = a["pending"].get("file") or a["pending"].get("url")
+                known = created["files"].get(cache_key)
+                if known:
+                    creative["file_id"] = known            # same image as before → compare the real id
+                else:
+                    creative["file_id"] = PENDING_FILE     # new image → always a difference (uploaded on --confirm)
+            body["creative"] = creative
+            d = _diff(body, cur, AD_SYNC_KEYS)
+            if "creative" in d:
+                d["creative"] = _merged_creative(cur.get("creative"), creative)
+                if creative.get("file_id") == PENDING_FILE:
+                    d["creative"]["file_id"] = PENDING_FILE
+            if d:
+                sync["ads"][a["key"]] = d
+    return sync
+
+
+def _sync_count(sync: dict) -> int:
+    return (1 if sync.get("campaign") else 0) + len(sync.get("ad_groups") or {}) + len(sync.get("ads") or {})
+
+
+# ---------------------------------------------------------------------------
 # Command
 # ---------------------------------------------------------------------------
 
@@ -226,7 +338,8 @@ def cmd_plan_apply(args) -> None:
     state = _load_state(state_path)
     if state.get("plan_sha") and state["plan_sha"] != sha:
         _err(f"⚠ plan changed since the last run (state {state_path} was written for another version) — "
-             "already-created objects are kept, new/changed ones are created as-is.")
+             "objects already created are kept; ↻ below marks the ones whose plan values differ "
+             "(synced only with --update-existing).")
     findings: list = []
 
     c = plan["campaign"]
@@ -264,20 +377,48 @@ def cmd_plan_apply(args) -> None:
         groups.append({"key": key, "body": gbody, "ads": ads})
     if not groups:
         findings.append(("error", "plan has no ad_groups."))
+    if campaign_body and (campaign_body.get("landing_page_configuration") or {}).get("query_string_template") and \
+            any((g["body"].get("landing_page_configuration") or {}).get("query_string_template") for g in groups):
+        findings.append(("warn", "query_string_template on the campaign AND on ad groups — precedence is unverified and the "
+                                 "ad-group template may replace the campaign one entirely (utm_source/medium/campaign lost). "
+                                 "Put the FULL UTM set on each ad group and drop the campaign template."))
 
     n_ads = sum(len(g["ads"]) for g in groups)
-    n_writes = (0 if campaign_id else 1) + len([g for g in groups if g["key"] not in state["created"]["ad_groups"]]) + \
-               len([a for g in groups for a in g["ads"] if a["key"] not in state["created"]["ads"]])
+    n_existing = (1 if state["created"].get("campaign") else 0) + \
+                 len([g for g in groups if g["key"] in state["created"]["ad_groups"]]) + \
+                 len([a for g in groups for a in g["ads"] if a["key"] in state["created"]["ads"]])
+    n_creates = (0 if campaign_id else 1) + len([g for g in groups if g["key"] not in state["created"]["ad_groups"]]) + \
+                len([a for g in groups for a in g["ads"] if a["key"] not in state["created"]["ads"]])
+    # Re-run: read the live objects and diff them against the plan (reads only; nothing is sent yet).
+    sync = _compute_sync(state, campaign_body, groups) if n_existing else {"campaign": None, "ad_groups": {}, "ads": {}, "unreadable": [], "current": {}}
+    n_updates = _sync_count(sync)
+    update = bool(getattr(args, "update_existing", False))
+    n_writes = n_creates + (n_updates if update else 0)
+    if n_updates and not update:
+        findings.append(("warn", f"{n_updates} existing object(s) differ from the plan and will NOT be changed — "
+                                 "add --update-existing to sync them (status is never touched; creative changes re-trigger review)."))
+    if sync["unreadable"]:
+        findings.append(("warn", f"could not read {len(sync['unreadable'])} existing object(s) ({', '.join(sync['unreadable'])}) — "
+                                 "they are skipped, not recreated."))
+    if update and any("creative" in d for d in sync["ads"].values()):
+        findings.append(("warn", f"{sum(1 for d in sync['ads'].values() if 'creative' in d)} ad creative(s) will be replaced → "
+                                 "review runs again; the ads may stop serving until re-approved."))
     tree = {
         "campaign": ({"existing_id": campaign_id} if campaign_id else campaign_body),
         "ad_groups": [{"key": g["key"], "created_id": state["created"]["ad_groups"].get(g["key"]), "body": g["body"],
                        "ads": [{"key": a["key"], "created_id": state["created"]["ads"].get(a["key"]), "body": a["body"]} for a in g["ads"]]}
                       for g in groups],
-        "shared_image": shared_image, "writes_remaining": n_writes, "state_file": state_path,
+        "shared_image": shared_image, "writes_remaining": n_writes, "creates_remaining": n_creates,
+        "existing": n_existing, "updates_pending": n_updates, "update_existing": update,
+        "sync": {"campaign": sync["campaign"], "ad_groups": sync["ad_groups"], "ads": sync["ads"], "unreadable": sync["unreadable"]},
+        "state_file": state_path,
     }
     errors = lint.report(findings)
     if errors:
         _die("Lint errors — fix the plan first (nothing was sent).")
+
+    def diff_note(d: dict | None) -> str:
+        return f"  ↻ {'updates' if update else 'differs from plan'}: {', '.join(sorted(d))}" if d else ""
 
     if not args.confirm:
         if args.json:
@@ -285,9 +426,10 @@ def cmd_plan_apply(args) -> None:
         else:
             cur = api.cached_currency()
             print(f"PLAN {os.path.basename(args.file)} — dry-run, nothing sent. {n_writes} write(s) remaining "
-                  f"({len(groups)} ad group(s), {n_ads} ad(s)); state: {state_path}")
+                  f"({n_creates} create(s)" + (f", {n_updates} update(s)" if update else "")
+                  + f"; {len(groups)} ad group(s), {n_ads} ad(s)); state: {state_path}")
             if campaign_id:
-                print(f"campaign: attach to existing {campaign_id}")
+                print(f"campaign: attach to existing {campaign_id}" + diff_note(sync["campaign"]))
             else:
                 b = campaign_body
                 budget = b["budget"]
@@ -301,13 +443,23 @@ def cmd_plan_apply(args) -> None:
                 done = " ✓" if state["created"]["ad_groups"].get(g["key"]) else ""
                 print(f"  ├─ [{g['key']}]{done} \"{gb['name']}\" [{gb['status']}] {bc.get('billing_event_type')} "
                       f"{fmt_money(bc.get('max_bid_micros'), cur) if bc.get('max_bid_micros') else bc.get('strategy')}  "
-                      f"hints {len(gb.get('context_hints') or [])}  utm={((gb.get('landing_page_configuration') or {}).get('query_string_template'))}")
+                      f"hints {len(gb.get('context_hints') or [])}  utm={((gb.get('landing_page_configuration') or {}).get('query_string_template'))}"
+                      + diff_note(sync["ad_groups"].get(g["key"])))
                 for a in g["ads"]:
                     cr = a["body"]["creative"]
                     adone = " ✓" if state["created"]["ads"].get(a["key"]) else ""
                     print(f"  │    [{a['key']}]{adone} \"{cr.get('title')}\" ({len(cr.get('title') or '')}) / "
-                          f"\"{cr.get('body')}\" ({len(cr.get('body') or '')}) → {cr.get('target_url')}  img={cr.get('file_id')}")
-            print("Add --confirm to create everything above (sequentially, idempotent, resumable).")
+                          f"\"{cr.get('body')}\" ({len(cr.get('body') or '')}) → {cr.get('target_url')}  img={cr.get('file_id')}"
+                          + diff_note(sync["ads"].get(a["key"])))
+            if n_existing:
+                print(f"{n_existing} object(s) already exist (✓) and are skipped"
+                      + (f"; {n_updates} differ from the plan (↻)" + ("" if update else " — add --update-existing to sync them") if n_updates else "; all match the plan")
+                      + ".")
+            if n_writes:
+                print("Add --confirm to " + ("create" if not (update and n_updates) else "create/update")
+                      + " everything above (sequentially, idempotent, resumable).")
+            else:
+                print("Nothing to send: everything exists" + (" and matches the plan." if not n_updates else "."))
         return
 
     # ----- execute --------------------------------------------------------
@@ -364,9 +516,39 @@ def cmd_plan_apply(args) -> None:
             created["ads"][a["key"]] = resp.get("id")
             log(f"    ad [{a['key']}] created {resp.get('id')} review {resp.get('review_status')}")
 
+    updated: dict = {"campaign": None, "ad_groups": {}, "ads": {}}
+    if update and n_updates:
+        if sync["campaign"]:
+            resp = api._api_call("POST", f"/campaigns/{campaign_id}", json_body=sync["campaign"], idempotent=True)
+            updated["campaign"] = campaign_id
+            log(f"campaign updated {campaign_id} ({', '.join(sorted(sync['campaign']))}) [{resp.get('status')}]")
+        for g in groups:
+            d = sync["ad_groups"].get(g["key"])
+            gid = created["ad_groups"].get(g["key"])
+            if d and gid:
+                resp = api._api_call("POST", f"/ad_groups/{gid}", json_body=d, idempotent=True)
+                updated["ad_groups"][g["key"]] = gid
+                log(f"  ad group [{g['key']}] updated {gid} ({', '.join(sorted(d))})")
+            for a in g["ads"]:
+                d = sync["ads"].get(a["key"])
+                aid = created["ads"].get(a["key"])
+                if not (d and aid):
+                    continue
+                if "creative" in d and d["creative"].get("file_id") == PENDING_FILE:
+                    d["creative"]["file_id"] = ensure_file(a["pending"])
+                resp = api._api_call("POST", f"/ads/{aid}", json_body=d, idempotent=True)
+                updated["ads"][a["key"]] = aid
+                log(f"    ad [{a['key']}] updated {aid} ({', '.join(sorted(d))}) review {resp.get('review_status')}")
+
     _save_state(state_path, state)
     if args.json:
-        _output_json({"executed": True, "created": created, "state_file": state_path})
+        _output_json({"executed": True, "created": created, "updated": updated, "skipped_existing": n_existing,
+                      "updates_pending": (0 if update else n_updates), "state_file": state_path})
     else:
-        print(f"Done: campaign {campaign_id}, {len(created['ad_groups'])} ad group(s), {len(created['ads'])} ad(s). "
-              f"State: {state_path}. Next: ad-review --campaign-id {campaign_id} (review takes minutes), then activate bottom-up.")
+        print(f"Done: campaign {campaign_id}, {len(created['ad_groups'])} ad group(s), {len(created['ads'])} ad(s)"
+              + (f"; updated {_sync_count(updated)}" if update and n_updates else "")
+              + f". State: {state_path}.")
+        if n_updates and not update:
+            print(f"ℹ {n_existing} existing object(s) left untouched; {n_updates} differ from the plan — "
+                  "re-run with --update-existing to sync them (status is never touched; creative changes re-trigger review).")
+        print(f"Next: ad-review --campaign-id {campaign_id} (review takes minutes), then activate bottom-up.")

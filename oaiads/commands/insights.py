@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from oaiads import api
 from oaiads.formatting import _die, _err, fmt_delta, fmt_money, fmt_num, print_table, _truncate
-from oaiads.commands.common import brief_error, date_window, emit, parse_csv, parse_json_arg, qarr
+from oaiads.commands.common import ad_attention, brief_error, date_window, emit, parse_csv, parse_json_arg, qarr
 
 LEVELS = ["account", "campaign", "ad_group", "ad"]
 LEVEL_WIRE = {"account": "ad_account", "campaign": "campaign", "ad_group": "ad_group", "ad": "ad"}
@@ -16,6 +16,7 @@ SEGMENTS = ["product", "country", "device"]
 INCLUDES = ["zero_impression_items", "zero_impression_products"]
 METRICS = ["impressions", "clicks", "spend", "ctr", "cpc", "cpm"]
 DEFAULT_CHILD = {"account": "campaign", "campaign": "ad_group", "ad_group": "ad", "ad": "ad"}
+LIST_PATH = {"campaign": "/campaigns", "ad_group": "/ad_groups", "ad": "/ads"}
 
 
 # Coarse timezone → home country map for the "targets a foreign country" guard (pulse).
@@ -189,19 +190,28 @@ def cmd_conversion_insights(args) -> None:
     body: dict = {"aggregation_level": LEVEL_WIRE[args.level],
                   "time_ranges": [time_range_param(since, until, tz)],
                   "time_granularity": args.granularity}
-    if args.ids:
-        body["entity_ids"] = parse_csv(args.ids)
+    # Verified live 2026-09-07: the server defaults group_by_entity to TRUE and then rejects the call
+    # with 400 "entity_ids must be provided when group_by_entity is true". So: ids given (or asked for
+    # via --group-by-entity → we list the level's non-archived objects) → one row per entity;
+    # otherwise group_by_entity=false → ONE total row (entity_id = the ad account).
+    ids = parse_csv(args.ids)
+    if args.group_by_entity and not ids and args.level != "account":
+        ids = [o["id"] for o in api._fetch_all(LIST_PATH[args.level], []) if o.get("status") != "archived" and o.get("id")]
+        if not ids:
+            _die(f"ERROR: --group-by-entity: no non-archived {args.level} objects to group by (pass --ids).")
+    body["group_by_entity"] = bool(ids)
+    if ids:
+        body["entity_ids"] = ids
     if args.breakdown:
         body["breakdown"] = args.breakdown
-    if args.group_by_entity:
-        body["group_by_entity"] = True
     if args.include_zero:
         body["include_zero_rows"] = True
     data = api._api_call("POST", "/conversions/insights", json_body=body, idempotent=True)
     rows = data.get("data", []) if isinstance(data, dict) else data
 
     def human(items):
-        print(f"Conversions {since} → {until} ({tz}), level {args.level}, granularity {args.granularity}")
+        scope = f"{len(ids)} {args.level}(s)" if ids else "whole account (one total row; --ids or --group-by-entity for per-entity rows)"
+        print(f"Conversions {since} → {until} ({tz}), level {args.level}, granularity {args.granularity}, {scope}")
         print_table([[r.get("entity_id"), r.get("date") or "", r.get("device") or r.get("country") or "",
                       r.get("conversions"), r.get("click_through_conversions"), r.get("view_through_conversions")]
                      for r in items],
@@ -240,9 +250,11 @@ def cmd_pulse(args) -> None:
     cur_rows, err_cur = campaign_rows(since, until)
     prev_rows, err_prev = campaign_rows(prev_since, prev_until)
 
+    # group_by_entity=false → one account-total row; the server default (true) needs entity_ids and
+    # answered 400 in every pulse run (seen live 2026-09-07).
     conv = api._api_call("POST", "/conversions/insights", json_body={
         "aggregation_level": "campaign", "time_granularity": "none",
-        "time_ranges": [time_range_param(since, until, tz)]}, soft=True, idempotent=True)
+        "time_ranges": [time_range_param(since, until, tz)], "group_by_entity": False}, soft=True, idempotent=True)
 
     settings = api._api_call("GET", "/conversions/event_settings", [("limit", 500)], soft=True)
     campaigns_all = api._api_call("GET", "/campaigns", [("limit", 500)], soft=True)
@@ -263,10 +275,13 @@ def cmd_pulse(args) -> None:
                 foreign.append({"id": c.get("id"), "name": c.get("name"), "status": c.get("status"), "countries": sorted(countries)})
 
     ads = api._api_call("GET", "/ads", [(qarr("include"), "serving_issues"), ("limit", 500)], soft=True)
-    flagged = []
+    flagged, waiting, paused_only = [], [], []
     if isinstance(ads, dict) and "_error" not in ads:
-        flagged = [a for a in ads.get("data", []) if a.get("status") != "archived" and
-                   (a.get("review_status") != "approved" or a.get("serving_issues"))]
+        live_ads = [a for a in ads.get("data", []) if a.get("status") != "archived"]
+        # Same classification as ad-review: paused-hierarchy / in-review codes are intended states.
+        flagged = [a for a in live_ads if ad_attention(a) == "problem"]
+        waiting = [a for a in live_ads if ad_attention(a) == "waiting"]
+        paused_only = [a for a in live_ads if not ad_attention(a) and a.get("serving_issues")]
 
     def agg(rows):
         t = {"impressions": 0, "clicks": 0, "spend": 0.0}
@@ -288,6 +303,8 @@ def cmd_pulse(args) -> None:
         "totals": tot, "previous_totals": prev, "conversions": conv_total,
         "campaigns": cur_rows, "previous_campaigns": prev_rows,
         "ads_needing_attention": flagged,
+        "ads_waiting_for_review": waiting,
+        "ads_paused_only": len(paused_only),
         "active_campaigns_without_conversion_event": [{"id": c.get("id"), "name": c.get("name")} for c in unlinked],
         "campaigns_targeting_foreign_country": foreign,
         "errors": {k: v for k, v in (("insights", err_cur or err_prev), ("conversions", brief_error(conv)),
@@ -351,9 +368,13 @@ def cmd_pulse(args) -> None:
             print(f"\n  ⚠ {len(r['active_campaigns_without_conversion_event'])} active campaign(s) with no conversion event linked ({names}) — "
                   "clicks only, no CPA. See conversion-check.")
         if r["ads_needing_attention"]:
-            print(f"\n  ⚠ {len(r['ads_needing_attention'])} ad(s) not approved / with serving issues — run ad-review.")
+            print(f"\n  ⚠ {len(r['ads_needing_attention'])} ad(s) rejected / with serving issues — run ad-review.")
         elif not r["errors"].get("ads"):
-            print("\n  ✅ All ads approved, no serving issues.")
+            print("\n  ✅ No rejected ads, no serving issues"
+                  + (f" ({r['ads_paused_only']} not serving only because the campaign/ad group/ad is paused)" if r["ads_paused_only"] else "")
+                  + ".")
+        if r["ads_waiting_for_review"]:
+            print(f"  ℹ {len(r['ads_waiting_for_review'])} ad(s) waiting for review — normal for minutes after create/edit.")
         for k, v in r["errors"].items():
             if k not in ("insights", "spend_limits"):
                 print(f"  ({k}: {v})")

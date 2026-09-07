@@ -295,3 +295,17 @@ def test_single_named_account_auto_selected(monkeypatch):
     api.set_account(None)
     api.check_config()
     assert api.ACTIVE_ACCOUNT == "acme" and api.api_key() == "sk-a"
+
+
+# ---------------------------------------------------------------------------
+# Persistent state helpers
+# ---------------------------------------------------------------------------
+
+def test_write_json_atomic_accepts_bare_filename(tmp_path, monkeypatch):
+    """`plan-apply --file plan.json` derives `plan.state.json`; dirname('') used to crash os.makedirs (live 2026-09-07)."""
+    monkeypatch.chdir(tmp_path)
+    api._write_json_atomic("plan.state.json", {"ok": 1})
+    assert json.loads((tmp_path / "plan.state.json").read_text()) == {"ok": 1}
+    assert not list(tmp_path.glob("*.tmp.*")), "temp file renamed away"
+    api._write_json_atomic(str(tmp_path / "nested" / "dir" / "s.json"), [1])
+    assert json.loads((tmp_path / "nested" / "dir" / "s.json").read_text()) == [1]

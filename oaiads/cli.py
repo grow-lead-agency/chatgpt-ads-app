@@ -275,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--campaign-id")
     _list_args(sp)
     sp = _cmd(sub, "adgroup-detail", cmd_adgroup_detail, "Ad group detail incl. bidding, hints, issues")
-    sp.add_argument("--ad-group-id", required=True)
+    sp.add_argument("--ad-group-id", "--adgroup-id", required=True)
     sp.add_argument("--with-children", action="store_true", help="Also list its ads")
     sp = _cmd(sub, "adgroup-create", cmd_adgroup_create, "Create an ad group (paused)", write=True)
     sp.add_argument("--campaign-id", required=True)
@@ -283,19 +283,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--status", default="paused", choices=STATUS_CREATE)
     _adgroup_common_args(sp)
     sp = _cmd(sub, "adgroup-update", cmd_adgroup_update, "Update an ad group", write=True)
-    sp.add_argument("--ad-group-id", required=True)
+    sp.add_argument("--ad-group-id", "--adgroup-id", required=True)
     sp.add_argument("--name")
     sp.add_argument("--status", choices=STATUS_UPDATE)
     _adgroup_common_args(sp)
     for action, fn in (("activate", cmd_adgroup_activate), ("pause", cmd_adgroup_pause), ("archive", cmd_adgroup_archive)):
         sp = _cmd(sub, f"adgroup-{action}", fn, f"{action.capitalize()} an ad group" + (" (IRREVERSIBLE)" if action == "archive" else ""), write=True)
-        sp.add_argument("--ad-group-id", required=True)
+        sp.add_argument("--ad-group-id", "--adgroup-id", required=True)
         if action == "archive":
             sp.add_argument("--force", action="store_true")
 
     # ----- Ads -------------------------------------------------------------
     sp = _cmd(sub, "ads", cmd_ads, "List ads (by ad group / campaign / whole account)")
-    sp.add_argument("--ad-group-id")
+    sp.add_argument("--ad-group-id", "--adgroup-id")
     sp.add_argument("--campaign-id", help="All ads of a campaign (iterates its ad groups)")
     sp.add_argument("--review-status", choices=REVIEW_STATUSES)
     _list_args(sp)
@@ -304,12 +304,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = _cmd(sub, "ad-review", cmd_ad_review, "Review check: ads not approved / with serving issues")
     sp.add_argument("--ad-id", help="Single ad (default: scan)")
     sp.add_argument("--campaign-id")
-    sp.add_argument("--ad-group-id")
+    sp.add_argument("--ad-group-id", "--adgroup-id")
     sp.add_argument("--name")
     sp.add_argument("--order", choices=["asc", "desc"])
     sp.add_argument("--max-items", type=int, default=api.LIST_HARD_CAP)
     sp = _cmd(sub, "ad-create", cmd_ad_create, "Create an ad (paused) — chat_card or product_ad_template", write=True)
-    sp.add_argument("--ad-group-id", required=True)
+    sp.add_argument("--ad-group-id", "--adgroup-id", required=True)
     sp.add_argument("--name", required=True)
     sp.add_argument("--status", default="paused", choices=STATUS_CREATE)
     sp.add_argument("--force", action="store_true", help="Skip product_set sanity warnings")
@@ -342,10 +342,11 @@ def build_parser() -> argparse.ArgumentParser:
     _insights_args(sp)
     sp = _cmd(sub, "conversion-insights", cmd_conversion_insights, "Attributed conversions (click-through + view-through)")
     sp.add_argument("--level", choices=LEVELS, default="campaign")
-    sp.add_argument("--ids", help="entity ids, comma-separated")
+    sp.add_argument("--ids", help="entity ids, comma-separated → one row per entity (default: one total row)")
     sp.add_argument("--granularity", choices=["none", "daily"], default="none")
     sp.add_argument("--breakdown", choices=["device", "country"])
-    sp.add_argument("--group-by-entity", action="store_true")
+    sp.add_argument("--group-by-entity", action="store_true",
+                    help="One row per entity; without --ids the CLI lists all non-archived objects at --level")
     sp.add_argument("--include-zero", action="store_true")
     sp.add_argument("--since")
     sp.add_argument("--until")
@@ -534,6 +535,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = _cmd(sub, "plan-apply", cmd_plan_apply, "Create campaign → ad groups → ads from one JSON plan (resumable)", write=True)
     sp.add_argument("--file", required=True, help="Plan JSON (see docs/plan-example.json)")
     sp.add_argument("--state", help="State file (default <plan>.state.json) — records created ids for resume")
+    sp.add_argument("--update-existing", action="store_true",
+                    help="Also sync objects created by an earlier run whose plan values changed (name, budget/end/targeting, "
+                         "bidding, hints, UTM, creative). Never touches status; creative changes re-trigger review.")
 
     # ----- Bulk API --------------------------------------------------------
     sp = _cmd(sub, "bulk-submit", cmd_bulk_submit, "Submit a bulk job from JSON (dry-run = server validate_only)", write=True)

@@ -159,6 +159,9 @@ def new_idempotency_key() -> str:
 # ---------------------------------------------------------------------------
 
 def _write_json_atomic(path: str, data: object) -> None:
+    # A bare filename has dirname "" and os.makedirs("") raises FileNotFoundError — seen live with
+    # `plan-apply --file plan.json --confirm` (state file plan.state.json) on 2026-09-07.
+    path = os.path.abspath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:

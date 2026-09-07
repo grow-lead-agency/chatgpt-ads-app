@@ -7,13 +7,11 @@ import os
 from oaiads import api, lint
 from oaiads.formatting import _die, _err, fmt_ts, print_table, _truncate
 from oaiads.commands.common import (
-    drop_archived, emit, issues_str, parse_json_arg, print_plan, qarr, run_write, state_change, trunc,
+    ad_attention, drop_archived, emit, issues_str, parse_json_arg, print_plan, qarr, run_write, state_change, trunc,
 )
 from oaiads.commands.files import upload_image
 
 CREATIVE_TYPES = ["chat_card", "product_ad_template"]
-# Serving-issue codes that only say "something in the hierarchy is paused" — expected while paused.
-PAUSED_CODES = {"campaign_not_active", "ad_group_not_active", "ad_not_active", "campaign_not_started"}
 REVIEW_STATUSES = ["in_review", "rejected", "approved"]
 
 
@@ -89,19 +87,20 @@ def cmd_ad_review(args) -> None:
     else:
         args.include_issues = True
         rows = drop_archived(_ads_for(args), None)
-    def real_issues(a):
-        return [i for i in (a.get("serving_issues") or []) if (i.get("code") if isinstance(i, dict) else i) not in PAUSED_CODES]
-
-    flagged = [a for a in rows if a.get("review_status") != "approved" or real_issues(a) or a.get("appeal")]
-    paused_only = [a for a in rows if a not in flagged and a.get("serving_issues")]
+    # Classification shared with pulse (common.ad_attention): paused-hierarchy and in-review codes are
+    # expected states, not problems. `_attention` is added to the JSON rows so scripts can tell them apart.
+    for a in rows:
+        a["_attention"] = ad_attention(a)
+    flagged = [a for a in rows if a["_attention"]]
+    paused_only = [a for a in rows if not a["_attention"] and a.get("serving_issues")]
 
     def human(items):
         if not items:
             print(f"✅ All {len(rows)} ad(s) approved, no serving issues"
                   + (f" ({len(paused_only)} not serving only because the campaign/ad group/ad is paused)." if paused_only else "."))
             return
-        waiting = [a for a in items if a.get("review_status") == "in_review" and not real_issues(a) and not a.get("appeal")]
-        problems = [a for a in items if a not in waiting]
+        waiting = [a for a in items if a["_attention"] == "waiting"]
+        problems = [a for a in items if a["_attention"] == "problem"]
         if problems:
             print(f"Problems ({len(problems)}) — rejected / serving issues / appeals:")
             print_table([[a.get("id"), _truncate(a.get("name"), 28), a.get("status"), a.get("review_status"),
@@ -109,11 +108,13 @@ def cmd_ad_review(args) -> None:
                           (a.get("appeal") or {}).get("status") or ""] for a in problems],
                         ["ID", "Name", "Status", "Review", "Reason", "Serving issues", "Appeal"])
         if waiting:
-            print(f"\nWaiting for review ({len(waiting)}) — normal for minutes after create/edit:")
+            print(f"\nWaiting for review ({len(waiting)}) — normal for minutes after create/edit, not a problem:")
             for a in waiting:
                 print(f"  {a.get('id')}  {_truncate(a.get('name'), 40)}  [{a.get('status')}]")
-        print(f"\n{len(problems)} problem(s), {len(waiting)} in review, {len(rows) - len(items)} fine. "
-              "Rejected ads: edit the creative (ad-update) → re-review runs automatically.")
+        fine = len(rows) - len(items)
+        print(f"\n{len(problems)} problem(s), {len(waiting)} in review, {fine} fine"
+              + (f" ({len(paused_only)} not serving only because the campaign/ad group/ad is paused)" if paused_only else "")
+              + ". Rejected ads: edit the creative (ad-update) → re-review runs automatically.")
         if any((a.get("review") or {}).get("reason", "").startswith(("crawler", "crawl", "robots", "landing", "missing_favicon")) for a in items):
             print("Landing-page reasons: run `landing-check --url <target_url>` to see what the crawler hits.")
 

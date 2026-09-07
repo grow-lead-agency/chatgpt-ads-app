@@ -197,6 +197,10 @@ def cmd_adgroup_create(args) -> None:
         body["product_set"] = ps
     if args.query_string_template:
         body["landing_page_configuration"] = {"query_string_template": args.query_string_template}
+        if (campaign.get("landing_page_configuration") or {}).get("query_string_template"):
+            findings.append(("warn", "the campaign also has a query_string_template — precedence is unverified and the ad-group "
+                                     "template may replace it entirely (utm_source/medium/campaign lost). Put the FULL UTM "
+                                     "set on the ad group and clear the campaign one."))
     if args.status == "active":
         findings.append(("warn", "Creating the ad group ACTIVE (default paused)."))
     if lint.report(findings):

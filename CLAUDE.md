@@ -1,8 +1,10 @@
 # ChatGPT Ads App — CLI for the OpenAI Advertiser API (ChatGPT Ads)
 
-Python CLI for ads in ChatGPT via the **OpenAI Advertiser API v1** (`https://api.ads.openai.com/v1`, OpenAPI spec 2.3.0). Version 1.3.2, 96 commands covering all 88 spec operations + the Bulk API (limited preview) + a `raw` escape hatch. Czech user docs in [README.md](README.md).
+Python CLI for ads in ChatGPT via the **OpenAI Advertiser API v1** (`https://api.ads.openai.com/v1`, OpenAPI spec 2.3.0). Version 1.4.0, 96 commands covering all 88 spec operations + the Bulk API (limited preview) + a `raw` escape hatch. Czech user docs in [README.md](README.md).
 
-## Current phase (2026-09-02)
+## Current phase (2026-09-07)
+
+**1.4.0** fixed the first week of live-use findings (state file crash on relative `plan-apply` paths, false alarms in `pulse`/`ad-review`, conversions 400) and added `plan-apply --update-existing`; details in [CHANGELOG.md](CHANGELOG.md) and [docs/api-notes.md → Poznámky z ostrého provozu](docs/api-notes.md).
 
 **Live-verified read AND write** on the author's self-serve account (EUR): the first pilot created 1 campaign / 7 ad groups / 18 ads through the CLI — facts in [docs/api-notes.md → Živě ověřeno](docs/api-notes.md). Not deployed on self-serve accounts (404 "Invalid URL"): `spend_limit_windows`, `negative_keywords`; Business Agent tools 403. Lists are eventually consistent — verify with details. Ads Manager's auto-generated campaign targets **United States**.
 
@@ -24,7 +26,7 @@ Credentials in `.env`: `OPENAI_ADS_API_KEY` (issued in Ads Manager → Settings 
 - `oaiads/formatting.py` — output helpers, **micros ⇄ currency** (Decimal), tables
 - `oaiads/lint.py` — preflight: spec limits (title 3–50, body ≤100, URL ≤2048 + reserved params, names 3–1000, hints ≤2000, budget ≥1 unit) + **ad-policy heuristics** (warn-only)
 - `oaiads/cli.py` — argparse wiring; `_cmd()` = parser/dispatch parity by construction
-- `oaiads/commands/*.py` — one module per domain: account, campaigns, adgroups, ads, files, insights (+pulse), targeting, audiences, conversions, feeds, leads, agents, bulk, partner, raw, **plan** (`plan-apply`: whole tree from JSON, resumable via `<plan>.state.json`); `common.py` = shared plan/write/state-change flows (`run_write(verify_path=…)` re-reads the detail after an update)
+- `oaiads/commands/*.py` — one module per domain: account, campaigns, adgroups, ads, files, insights (+pulse), targeting, audiences, conversions, feeds, leads, agents, bulk, partner, raw, **plan** (`plan-apply`: whole tree from JSON, resumable via `<plan>.state.json`; re-runs diff the plan against live details and `--update-existing` syncs everything except `status`); `common.py` = shared plan/write/state-change flows (`run_write(verify_path=…)` re-reads the detail after an update) and the serving-issue classification (`ad_attention`: `PAUSED_CODES` + `ad_in_review` are expected states, shared by `ad-review` and `pulse`)
 - `scripts/check_docs_consistency.py` — CLI ↔ README ↔ CLAUDE.md ↔ skill gate
 - `tests/` — offline pytest suite (no credentials, no network): `.venv/bin/python -m pytest tests/`
 
@@ -56,7 +58,8 @@ Full flags: README.md command tables, or `--help` per command.
 - **Creates carry an `Idempotency-Key`** (auto-generated, printed) → transient failures are retried safely; writes without one are never auto-retried (the CLI says the write may have landed).
 - **Spend limit windows** (`spend-limit-create`) are the account-level fuse where available — on self-serve accounts the endpoint currently returns 404, so the fuse is campaign daily budgets (spend can hit 2×/day) + `end_time`, watched via `pulse`.
 - Preflight lint blocks spec violations and warns on ad-policy risks (categories, superlatives, ChatGPT/OpenAI mentions, caps/emoji) and on copy above the Help-Center recommendation (~16-char title, ~32-char body). `landing-check` tests reachability for browser AND bot UA (WAF), robots.txt for **OAI-AdsBot**/OAI-SearchBot, favicon and whether `?oppref=` survives redirects — the top rejection and attribution-loss causes.
-- Listings hide `archived` rows by default. Always use `--json` when parsing programmatically (errors → stderr, stdout stays empty).
+- Listings hide `archived` rows by default. Always use `--json` when parsing programmatically (errors → stderr, stdout stays empty). `--ad-group-id` has the alias `--adgroup-id`.
+- `ad-review` and `pulse` treat `campaign_not_active` / `ad_group_not_active` / `ad_not_active` / `campaign_not_started` / `ad_in_review` as intended states, never as problems (false alarms seen live). `pulse` reports ⚠ rejected/real issues, ℹ waiting for review, and "not serving only because paused" separately.
 
 ## ⚠️ Critical for automation (read before scripting writes)
 
@@ -66,6 +69,7 @@ Full flags: README.md command tables, or `--help` per command.
 - **Ad group billing must match the campaign**: `impression` for `impressions` campaigns, `click` for `clicks`/`conversions`.
 - **Ad review is automatic and re-runs on any creative change**; `review_status` in_review → approved/rejected typically within minutes. Serving needs the ad, ad group AND campaign active, review approved, account brand review approved (favicon!), and a payment method.
 - **Rate limits**: 600 req/min per endpoint, 1 200/min overall, per account AND per IP; bulk job creates 10/10 s. Usage is not exposed by the API — the CLI keeps its own sliding-window count in `.usage/` and paces at 80 %. Never fan out parallel invocations; `api-limits` shows the local count. Override: `OAIADS_IGNORE_RATE_BUDGET=1`.
+- **Conversions insights** (`POST /conversions/insights`): the server defaults `group_by_entity` to true and then demands `entity_ids` (400). The CLI sends `group_by_entity: false` (one account total) unless ids are given; `time_ranges` are JSON *strings*.
 - **Insights**: query arrays go as `fields[]=` (docs convention); default window = last 7 complete days ending yesterday (today's attribution is preliminary, future bounds are rejected); canonical field names (`campaign.spend`) come back as flat wire keys (`spend` / `campaign_spend`) — use `metric()` in insights.py, never hardcode one key.
 - **Custom audiences are async and revisioned**: every membership op needs its own `Idempotency-Key`, `expected_revision` from a fresh read, and polling via `audience-operation`. Not available for EEA/Switzerland targeting. Inclusion needs ~25 000 matched users; exclusion works with tiny audiences.
 - **`conversion_event_setting_ids` on a campaign = reporting link on CPM/CPC (link every campaign, or it reports clicks only) and the immutable optimization goal on oCPC (exactly one standard setting).** `conversion-check` audits pixel → setting → link; `pulse` warns.

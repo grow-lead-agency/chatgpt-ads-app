@@ -597,3 +597,276 @@ def test_plan_apply_lint_blocks_and_attach_mode(fake_api, tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["plan"]["campaign"] == {"existing_id": "cmpn_existing"}
     assert out["plan"]["ad_groups"][0]["body"]["bidding_config"]["billing_event_type"] == "impression"
+
+
+# ---------------------------------------------------------------------------
+# Findings from live use 2026-09-07 (docs/api-notes.md → Poznámky z ostrého provozu)
+# ---------------------------------------------------------------------------
+
+def test_plan_apply_relative_path_writes_state_next_to_plan(fake_api, tmp_path, monkeypatch):
+    """#1: a bare --file plan.json crashed before the campaign was created (state path had no dirname)."""
+    calls, answers = fake_api
+    monkeypatch.setattr("oaiads.commands.plan.upload_image", lambda url=None, path=None, purpose=None: {"file_id": "file_9"})
+    answers["POST /campaigns"] = {"id": "cmpn_1", "name": "Podzim", "status": "paused"}
+    answers["POST /ad_groups"] = [{"id": "adgrp_A"}, {"id": "adgrp_G"}]
+    answers["POST /ads"] = [{"id": "ad_1"}, {"id": "ad_2"}, {"id": "ad_3"}]
+    _write_plan(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    run(["plan-apply", "--file", "plan.json", "--confirm"])
+    assert [c["path"] for c in writes(calls)][:1] == ["/campaigns"]
+    state = json.loads((tmp_path / "plan.state.json").read_text())
+    assert state["created"]["campaign"] == "cmpn_1" and len(state["created"]["ads"]) == 3
+
+
+def test_ad_review_in_review_with_expected_codes_is_waiting_not_problem(fake_api, capsys):
+    """#3: freshly created (paused, in_review) ads carry ad_not_active + ad_in_review — not problems."""
+    _, answers = fake_api
+    answers["GET /ads"] = {"data": [
+        {"id": "ad_1", "name": "fresh", "review_status": "in_review", "status": "paused",
+         "serving_issues": [{"code": "ad_not_active"}, {"code": "ad_in_review"}]},
+        {"id": "ad_2", "name": "ok", "review_status": "approved", "status": "paused",
+         "serving_issues": [{"code": "ad_group_not_active"}]},
+        {"id": "ad_3", "name": "bad", "review_status": "approved", "status": "active",
+         "serving_issues": [{"code": "landing_page_crawl_issue"}]},
+    ], "has_more": False}
+    run(["ad-review"])
+    out = capsys.readouterr().out
+    assert "Problems (1)" in out and "ad_3" in out.split("Waiting")[0]
+    assert "Waiting for review (1)" in out and "1 problem(s), 1 in review, 1 fine (1 not serving only because" in out
+    run(["ad-review", "--json"])
+    rows = json.loads(capsys.readouterr().out)
+    assert {r["id"]: r["_attention"] for r in rows} == {"ad_3": "problem", "ad_1": "waiting"}
+
+
+def _pulse_answers(answers, ads):
+    answers["GET /ad_account"] = {"id": "adacct_1", "name": "Acme", "status": "active", "review": {"status": "approved"}}
+    answers["GET /ad_account/spend_limit_windows"] = {"_error": {"status": 404, "message": "Invalid URL"}}
+    answers["GET /ad_account/insights"] = {"data": []}
+    answers["POST /conversions/insights"] = {"data": [{"entity_id": "adacct_1", "conversions": 2, "click_through_conversions": 2}]}
+    answers["GET /ads"] = {"data": ads}
+    answers["GET /conversions/event_settings"] = {"data": []}
+    answers["GET /campaigns"] = {"data": []}
+
+
+def test_pulse_ignores_paused_and_in_review_codes(fake_api, capsys):
+    """#2: `ad_group_not_active` on a deliberately paused ad group produced a false alarm."""
+    _, answers = fake_api
+    _pulse_answers(answers, [
+        {"id": "ad_1", "review_status": "approved", "status": "active", "serving_issues": [{"code": "ad_group_not_active"}]},
+        {"id": "ad_2", "review_status": "in_review", "status": "paused", "serving_issues": [{"code": "ad_in_review"}, {"code": "ad_not_active"}]},
+        {"id": "ad_9", "review_status": "approved", "status": "archived", "serving_issues": [{"code": "landing_page_crawl_issue"}]},
+    ])
+    run(["pulse"])
+    out = capsys.readouterr().out
+    assert "⚠" not in out.split("Conv")[1] if "Conv" in out else "⚠" not in out
+    assert "No rejected ads, no serving issues (1 not serving only because" in out
+    assert "1 ad(s) waiting for review" in out
+    run(["pulse", "--json"])
+    r = json.loads(capsys.readouterr().out)
+    assert r["ads_needing_attention"] == [] and [a["id"] for a in r["ads_waiting_for_review"]] == ["ad_2"] and r["ads_paused_only"] == 1
+    assert r["conversions"] == 2
+
+
+def test_pulse_flags_real_problems(fake_api, capsys):
+    _, answers = fake_api
+    _pulse_answers(answers, [
+        {"id": "ad_1", "review_status": "rejected", "status": "paused", "serving_issues": [{"code": "ad_not_active"}]},
+        {"id": "ad_2", "review_status": "approved", "status": "active", "serving_issues": [{"code": "ad_account_brand_review_missing_favicon"}]},
+    ])
+    run(["pulse"])
+    assert "⚠ 2 ad(s) rejected / with serving issues — run ad-review" in capsys.readouterr().out
+
+
+def test_pulse_conversions_request_has_group_by_entity_false(fake_api):
+    """#4: the server defaults group_by_entity=true and then demands entity_ids (400 on every pulse)."""
+    calls, answers = fake_api
+    _pulse_answers(answers, [])
+    run(["pulse"])
+    conv = next(c for c in calls if c["method"] == "POST" and c["path"] == "/conversions/insights")
+    assert conv["json"]["group_by_entity"] is False and "entity_ids" not in conv["json"]
+    assert all(isinstance(t, str) for t in conv["json"]["time_ranges"]), "time_ranges are JSON strings (verified live)"
+
+
+def test_conversion_insights_total_vs_per_entity(fake_api, capsys):
+    calls, answers = fake_api
+    answers["POST /conversions/insights"] = {"data": [{"entity_id": "adacct_1", "conversions": 1}]}
+    run(["conversion-insights", "--json"])
+    body = calls[-1]["json"]
+    assert body["group_by_entity"] is False and "entity_ids" not in body
+    run(["conversion-insights", "--ids", "cmpn_1, cmpn_2", "--json"])
+    body = calls[-1]["json"]
+    assert body["group_by_entity"] is True and body["entity_ids"] == ["cmpn_1", "cmpn_2"]
+    # --group-by-entity without --ids lists the level's non-archived objects
+    answers["GET /campaigns"] = {"data": [{"id": "cmpn_1", "status": "active"}, {"id": "cmpn_old", "status": "archived"}], "has_more": False}
+    run(["conversion-insights", "--level", "campaign", "--group-by-entity", "--json"])
+    body = calls[-1]["json"]
+    assert body["entity_ids"] == ["cmpn_1"] and body["group_by_entity"] is True
+    assert body["time_ranges"] and all(isinstance(t, str) for t in body["time_ranges"])
+
+
+def test_adgroup_id_alias(fake_api, capsys):
+    """#8: commands are adgroup-*, the flag was only --ad-group-id."""
+    _, answers = fake_api
+    answers["GET /ad_groups/adgrp_1"] = {"id": "adgrp_1", "name": "G", "status": "paused", "bidding_config": {}}
+    args = run(["adgroup-detail", "--adgroup-id", "adgrp_1", "--json"])
+    assert args.ad_group_id == "adgrp_1"
+    assert json.loads(capsys.readouterr().out)["id"] == "adgrp_1"
+    args = build_parser().parse_args(["ad-create", "--adgroup-id", "adgrp_2", "--name", "x", "--title", "t", "--body", "b"])
+    assert args.ad_group_id == "adgrp_2"
+
+
+def test_adgroup_create_warns_on_double_utm_template(fake_api, capsys):
+    """#6: precedence campaign vs ad-group template is unverified — warn when both are set."""
+    _, answers = fake_api
+    answers["GET /campaigns/cmpn_1"] = {"id": "cmpn_1", "bidding_type": "clicks",
+                                        "landing_page_configuration": {"query_string_template": "utm_source=chatgpt"}}
+    run(["adgroup-create", "--campaign-id", "cmpn_1", "--name", "Group A", "--max-bid", "1",
+         "--query-string-template", "utm_content=A"])
+    assert "precedence is unverified" in capsys.readouterr().err
+
+
+def test_plan_apply_warns_on_campaign_and_adgroup_templates(fake_api, tmp_path, capsys):
+    p = _write_plan(tmp_path, campaign={"name": "Podzim", "bidding_type": "clicks", "daily_budget": 15, "end": "2099-01-01",
+                                        "location_ids": ["1000055"], "conversion_event_setting_ids": ["ces_1"],
+                                        "query_string_template": "utm_source=chatgpt&utm_medium=cpc"})
+    run(["plan-apply", "--file", str(p)])
+    assert "Put the FULL UTM set on each ad group" in capsys.readouterr().err
+
+
+def _live_tree(answers, hints_a, title_a0="Kurz práce s AI", file_id="file_9"):
+    """Live details matching the plan written by _write_plan (after a first successful run)."""
+    answers["GET /campaigns/cmpn_1"] = {"id": "cmpn_1", "name": "Podzim", "status": "active", "bidding_type": "clicks",
+                                        "budget": {"daily_spend_limit_micros": 15_000_000, "lifetime_spend_limit_micros": None},
+                                        "end_time": 4070908800, "conversion_event_setting_ids": ["ces_1"],
+                                        "targeting": {"locations": {"include": [{"id": "1000055", "type": "country", "name": "Czechia"}]}}}
+    answers["GET /ad_groups/adgrp_A"] = {"id": "adgrp_A", "name": "A situace", "status": "active", "context_hints": hints_a,
+                                         "bidding_config": {"billing_event_type": "click", "max_bid_micros": 1_000_000, "strategy": "fixed_bid"},
+                                         "landing_page_configuration": {"query_string_template": "utm_content=A"}}
+    answers["GET /ad_groups/adgrp_G"] = {"id": "adgrp_G", "name": "G kontrola", "status": "paused", "context_hints": ["vibe coding", "kurz AI"],
+                                         "bidding_config": {"billing_event_type": "click", "max_bid_micros": 1_000_000, "strategy": "fixed_bid"}}
+    for aid, name, title, body in (("ad_1", "A1 čas", title_a0, "Postav si appku bez kódování."),
+                                   ("ad_2", "A/1 · AI v praxi", "AI v praxi", "Praktický videokurz."),
+                                   ("ad_3", "G1 čas", "Kurz práce s AI", "Postav si appku bez kódování.")):
+        answers[f"GET /ads/{aid}"] = {"id": aid, "name": name, "status": "active", "review_status": "approved",
+                                      "creative": {"type": "chat_card", "title": title, "body": body, "target_url": "https://www.example.com/",
+                                                   "file_id": file_id, "image_url": "https://cdn/x.png"}}
+
+
+def _first_run(fake_api, tmp_path, monkeypatch, capsys):
+    calls, answers = fake_api
+    monkeypatch.setattr("oaiads.commands.plan.upload_image", lambda url=None, path=None, purpose=None: {"file_id": "file_9"})
+    answers["POST /campaigns"] = {"id": "cmpn_1", "name": "Podzim", "status": "paused"}
+    answers["POST /ad_groups"] = [{"id": "adgrp_A"}, {"id": "adgrp_G"}]
+    answers["POST /ads"] = [{"id": "ad_1"}, {"id": "ad_2"}, {"id": "ad_3"}]
+    p = _write_plan(tmp_path)
+    run(["plan-apply", "--file", str(p), "--confirm"])
+    calls.clear()
+    capsys.readouterr()  # drop the first run's output
+    return p
+
+
+def test_plan_apply_rerun_reports_nothing_to_do_when_live_matches(fake_api, tmp_path, capsys, monkeypatch):
+    calls, answers = fake_api
+    p = _first_run(fake_api, tmp_path, monkeypatch, capsys)
+    _live_tree(answers, ["chce si automatizovat reporting", "marketér chce postavit appku bez kódu"])  # order differs: fine
+    run(["plan-apply", "--file", str(p), "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["plan"]["existing"] == 6 and out["plan"]["updates_pending"] == 0 and out["plan"]["writes_remaining"] == 0
+    assert not writes(calls) and all(c["method"] == "GET" for c in calls)
+    run(["plan-apply", "--file", str(p)])
+    assert "Nothing to send: everything exists and matches the plan." in capsys.readouterr().out
+
+
+def test_plan_apply_rerun_reports_diffs_and_never_syncs_without_flag(fake_api, tmp_path, capsys, monkeypatch):
+    """#5: a re-run silently ignored plan edits. Now it reports them and only --update-existing applies them."""
+    calls, answers = fake_api
+    p = _first_run(fake_api, tmp_path, monkeypatch, capsys)
+    _live_tree(answers, ["old hint only"], title_a0="Starý titulek")
+    # dry-run: differences reported, nothing sent
+    run(["plan-apply", "--file", str(p), "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["plan"]["updates_pending"] == 2 and out["plan"]["writes_remaining"] == 0
+    assert set(out["plan"]["sync"]["ad_groups"]["A"]) == {"context_hints"}
+    assert set(out["plan"]["sync"]["ads"]["A/0"]) == {"creative"}
+    assert not writes(calls)
+    calls.clear()
+    run(["plan-apply", "--file", str(p)])
+    cap = capsys.readouterr()
+    assert "↻ differs from plan: context_hints" in cap.out and "↻ differs from plan: creative" in cap.out
+    assert "2 differ from the plan (↻) — add --update-existing" in cap.out and "will NOT be changed" in cap.err
+    # confirm WITHOUT the flag: still no writes, explicit hint
+    calls.clear()
+    run(["plan-apply", "--file", str(p), "--confirm"])
+    assert not writes(calls)
+    assert "2 differ from the plan — re-run with --update-existing" in capsys.readouterr().out
+
+
+def test_plan_apply_update_existing_syncs_changed_objects_only(fake_api, tmp_path, capsys, monkeypatch):
+    calls, answers = fake_api
+    p = _first_run(fake_api, tmp_path, monkeypatch, capsys)
+    _live_tree(answers, ["old hint only"], title_a0="Starý titulek")
+    answers["POST /ad_groups/adgrp_A"] = {"id": "adgrp_A"}
+    answers["POST /ads/ad_1"] = {"id": "ad_1", "review_status": "in_review"}
+    run(["plan-apply", "--file", str(p), "--confirm", "--update-existing", "--json"])
+    w = writes(calls)
+    assert [c["path"] for c in w] == ["/ad_groups/adgrp_A", "/ads/ad_1"], "only the two changed objects are written"
+    assert w[0]["json"] == {"context_hints": ["marketér chce postavit appku bez kódu", "chce si automatizovat reporting"]}
+    assert "status" not in w[0]["json"] and "status" not in w[1]["json"], "status is never synced"
+    assert w[1]["json"]["creative"] == {"type": "chat_card", "title": "Kurz práce s AI", "body": "Postav si appku bez kódování.",
+                                        "target_url": "https://www.example.com/", "file_id": "file_9"}, "merged creative keeps the live file_id"
+    assert all(c["idempotent"] for c in w)
+    out = json.loads(capsys.readouterr().out)
+    assert out["updated"] == {"campaign": None, "ad_groups": {"A": "adgrp_A"}, "ads": {"A/0": "ad_1"}}
+    assert out["updates_pending"] == 0
+
+
+def test_plan_apply_update_existing_syncs_campaign_budget_and_bidding_merge(fake_api, tmp_path, capsys, monkeypatch):
+    calls, answers = fake_api
+    p = _first_run(fake_api, tmp_path, monkeypatch, capsys)
+    plan = json.loads(p.read_text(encoding="utf-8"))
+    plan["campaign"]["daily_budget"] = 20
+    plan["campaign"]["status"] = "paused"          # live campaign is active — must NOT be re-paused
+    plan["defaults"]["ad_group"]["max_bid"] = 2
+    p.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+    _live_tree(answers, ["marketér chce postavit appku bez kódu", "chce si automatizovat reporting"])
+    answers["POST /campaigns/cmpn_1"] = {"id": "cmpn_1", "status": "active"}
+    answers["POST /ad_groups/adgrp_A"] = {"id": "adgrp_A"}
+    answers["POST /ad_groups/adgrp_G"] = {"id": "adgrp_G"}
+    run(["plan-apply", "--file", str(p), "--confirm", "--update-existing"])
+    w = writes(calls)
+    assert [c["path"] for c in w] == ["/campaigns/cmpn_1", "/ad_groups/adgrp_A", "/ad_groups/adgrp_G"]
+    assert w[0]["json"] == {"budget": {"daily_spend_limit_micros": 20_000_000}}, "only the changed campaign field, no status"
+    assert w[1]["json"] == {"bidding_config": {"billing_event_type": "click", "max_bid_micros": 2_000_000, "strategy": "fixed_bid"}}, \
+        "bidding_config sent whole: live strategy kept, plan bid applied"
+    out = capsys.readouterr()
+    assert "campaign updated cmpn_1 (budget)" in out.out and "updated 3" in out.out
+
+
+def test_plan_apply_update_existing_new_image_is_uploaded(fake_api, tmp_path, capsys, monkeypatch):
+    calls, answers = fake_api
+    p = _first_run(fake_api, tmp_path, monkeypatch, capsys)
+    uploads = []
+    monkeypatch.setattr("oaiads.commands.plan.upload_image", lambda url=None, path=None, purpose=None: uploads.append(path) or {"file_id": "file_NEW"})
+    (tmp_path / "card2.png").write_bytes(b"\x89PNG new")
+    plan = json.loads(p.read_text(encoding="utf-8"))
+    plan["image_file"] = "card2.png"
+    p.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+    _live_tree(answers, ["marketér chce postavit appku bez kódu", "chce si automatizovat reporting"])
+    run(["plan-apply", "--file", str(p)])
+    assert "3 differ from the plan" in capsys.readouterr().out and not uploads, "dry-run never uploads"
+    answers["POST /ads/*"] = {"id": "x", "review_status": "in_review"}
+    run(["plan-apply", "--file", str(p), "--confirm", "--update-existing"])
+    w = writes(calls)
+    assert [c["path"] for c in w] == ["/ads/ad_1", "/ads/ad_2", "/ads/ad_3"]
+    assert len(uploads) == 1 and all(c["json"]["creative"]["file_id"] == "file_NEW" for c in w), "new image uploaded once, used by all ads"
+    assert "review runs again" in capsys.readouterr().err
+
+
+def test_plan_apply_rerun_unreadable_object_is_skipped_not_recreated(fake_api, tmp_path, capsys, monkeypatch):
+    calls, answers = fake_api
+    p = _first_run(fake_api, tmp_path, monkeypatch, capsys)
+    _live_tree(answers, ["marketér chce postavit appku bez kódu", "chce si automatizovat reporting"])
+    answers["GET /ad_groups/adgrp_G"] = {"_error": {"status": 404, "message": "Not found"}}
+    run(["plan-apply", "--file", str(p), "--confirm", "--update-existing"])
+    assert not writes(calls)
+    assert "could not read 1 existing object(s) (G)" in capsys.readouterr().err

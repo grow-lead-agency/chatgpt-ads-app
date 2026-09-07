@@ -210,6 +210,33 @@ def drop_archived(rows: list, status_arg: str | None, show_all: bool = False) ->
     return [r for r in rows if str(r.get("status", "")).lower() != "archived"]
 
 
+def issue_codes(obj: dict) -> list[str]:
+    return [i.get("code", "?") if isinstance(i, dict) else str(i) for i in (obj.get("serving_issues") or [])]
+
+
 def issues_str(obj: dict) -> str:
-    issues = obj.get("serving_issues") or []
-    return ", ".join(i.get("code", "?") if isinstance(i, dict) else str(i) for i in issues) or ""
+    return ", ".join(issue_codes(obj))
+
+
+# Serving-issue codes that describe an INTENDED or transient state, not a fault: something in the
+# hierarchy is paused / not started yet (the CLI itself creates everything paused), or the ad is
+# still in review. ad-review and pulse must not count them as problems (false alarms seen live
+# 2026-09-04/07: `ad_group_not_active` on a deliberately paused ad group, `ad_in_review` minutes
+# after ad-create).
+PAUSED_CODES = frozenset({"campaign_not_active", "ad_group_not_active", "ad_not_active", "campaign_not_started"})
+REVIEW_CODES = frozenset({"ad_in_review"})
+EXPECTED_ISSUE_CODES = PAUSED_CODES | REVIEW_CODES
+
+
+def real_issues(obj: dict) -> list[str]:
+    """Serving-issue codes that need a human: everything except the expected paused/in-review codes."""
+    return [c for c in issue_codes(obj) if c not in EXPECTED_ISSUE_CODES]
+
+
+def ad_attention(a: dict) -> str | None:
+    """'problem' (rejected / real serving issue / appeal), 'waiting' (in review, nothing else wrong) or None (fine)."""
+    if a.get("review_status") == "rejected" or real_issues(a) or a.get("appeal"):
+        return "problem"
+    if a.get("review_status") == "in_review":
+        return "waiting"
+    return None
