@@ -1,10 +1,15 @@
 # ChatGPT Ads App
 
-**Verze 1.4.1** · Python CLI pro reklamy v ChatGPT přes **OpenAI Advertiser API v1** (OpenAPI spec 2.3.0) — 96 příkazů, všech 88 operací ze specifikace + Bulk API + `plan-apply` + `raw` escape hatch. Stavěné pro orchestraci AI agentem (Claude Code) i pro vlastní automatizace: `--json` výstupy, dry-run zápisy, idempotence, vlastní rate-limit budget.
+**Verze 1.4.1** · Python CLI pro reklamy v ChatGPT přes **OpenAI Advertiser API v1** (OpenAPI spec 2.3.0): 96 příkazů, všech 88 operací ze specifikace + Bulk API + `plan-apply` + `raw` escape hatch. Stavěné pro orchestraci AI agentem (Claude Code) i pro vlastní automatizace: `--json` výstupy, dry-run zápisy, idempotence, vlastní rate-limit budget.
 
-Appka vznikla jako součást ekosystému kurzu [AI First](https://aifirst.cz) — praktická ukázka, jak si marketér může nechat AI postavit a řídit vlastní nástroje nad úplně novou reklamní platformou. Novinky sleduj přes **Watch → Custom → Releases** na GitHubu, changelog je v [CHANGELOG.md](CHANGELOG.md).
+Novinky sleduj přes **Watch → Custom → Releases** na GitHubu, changelog je v [CHANGELOG.md](CHANGELOG.md).
 
 > ✅ **Stav:** čtení i zápisy (kampaň, sestavy, reklamy, upload, preview) ověřené v ostrém provozu na self-serve účtu (2026-09-02). Co zbývá ověřit: [docs/api-notes.md → Neověřeno živě](docs/api-notes.md). Dry-run (bez `--confirm`) nic neposílá.
+
+> [!TIP]
+> **Appka je zdarma a je tvoje.** Naklonuj si ji, používej ji, přestav si ji po svém.
+>
+> Nevíš, jak ji rozjet? Nebo chceš AI v marketingu používat systematicky: řídit z jednoho místa všechny kanály, automatizovat rutinu, postavit si vlastní znalostní bázi a vibe codovat si nástroje na míru své firmě? To učím v kurzu **[AI First](https://aifirst.cz)**. Tahle appka je v něm vysvětlená i s tím, jak si postavit vlastní.
 
 ## 🆕 Co je nového (1.4.1)
 
@@ -14,17 +19,17 @@ Appka vznikla jako součást ekosystému kurzu [AI First](https://aifirst.cz) �
 
 ### 1.4.0
 
-- **Opravy z týdne ostrého provozu**: `plan-apply --file plan.json --confirm` už nepadá na relativní cestě (stav se zapisoval do `plan.state.json` bez adresáře — spadlo to až v ostrém běhu, před založením kampaně); `pulse` nehlásí falešný poplach u reklam v záměrně pozastavené sestavě a `ad-review` nedává čerstvě založené reklamy (`ad_in_review`) pod „Problems“ — oba sdílejí jednu klasifikaci (pauza v hierarchii a review = očekávaný stav, ne problém); konverze v `pulse` už nevrací HTTP 400 (server defaultuje `group_by_entity=true` a chce `entity_ids`).
-- **`plan-apply --update-existing`**: opakovaný běh porovná plán s živými objekty a rozdíly vypíše (↻); s flagem je sesynchronizuje (název, budget/end/targeting, bidding, hints, UTM, kreativa → nové review). `status` nikdy nemění. Bez flagu jen hlásí, kolik objektů se liší — dřív se změny v plánu tiše ignorovaly.
+- **Opravy z týdne ostrého provozu**: `plan-apply --file plan.json --confirm` už nepadá na relativní cestě (stav se zapisoval do `plan.state.json` bez adresáře a spadlo to až v ostrém běhu, před založením kampaně); `pulse` nehlásí falešný poplach u reklam v záměrně pozastavené sestavě a `ad-review` nedává čerstvě založené reklamy (`ad_in_review`) pod „Problems“ (oba sdílejí jednu klasifikaci: pauza v hierarchii a review = očekávaný stav, ne problém); konverze v `pulse` už nevrací HTTP 400 (server defaultuje `group_by_entity=true` a chce `entity_ids`).
+- **`plan-apply --update-existing`**: opakovaný běh porovná plán s živými objekty a rozdíly vypíše (↻); s flagem je sesynchronizuje (název, budget/end/targeting, bidding, hints, UTM, kreativa → nové review). `status` nikdy nemění. Bez flagu jen hlásí, kolik objektů se liší. Dřív se změny v plánu tiše ignorovaly.
 - `conversion-insights`: bez `--ids` jeden součtový řádek za účet, `--group-by-entity` si vylistuje objekty sám; alias `--adgroup-id`; lint varuje na UTM šablonu na kampani i sestavě zároveň. Playbook: celá UTM šablona na sestavu; bid 3–5 USD je US kalibrace, na CZ/SK trhu doručí i ~1 EUR.
 
 ### 1.3.1
 
-- **Context hints: čtyři styly místo jedné pravdy.** OpenAI popisuje hinty ve dvou nápovědách třemi způsoby (popis produktu „co / komu / kdy“ · téma či záměr sestavy · „conversations, topics, or keywords“). Playbook §2 to cituje doslova, odvozuje styly **P** (popis produktu), **S** (situace), **C** (otázka v konverzaci), **K** (témata/klíčová slova) a skill se ptá uživatele na cestu — nebo navrhne test stylů proti sobě (stejné reklamy, jedna sestava na styl, vlastní `utm_content`, kontrolní K sestava vždy).
+- **Context hints: čtyři styly místo jedné pravdy.** OpenAI popisuje hinty ve dvou nápovědách třemi způsoby (popis produktu „co / komu / kdy“ · téma či záměr sestavy · „conversations, topics, or keywords“). Playbook §2 to cituje doslova, odvozuje styly **P** (popis produktu), **S** (situace), **C** (otázka v konverzaci), **K** (témata/klíčová slova) a skill se ptá uživatele na cestu, nebo navrhne test stylů proti sobě (stejné reklamy, jedna sestava na styl, vlastní `utm_content`, kontrolní K sestava vždy).
 
 ### 1.3.0
 
-- **Přejmenováno na `chatgpt-ads-app`** (repo, složka, entrypoint `chatgpt_ads_cli.py`, skill `/chatgpt-ads`, placeholder `<CHATGPT_ADS_APP_DIR>`). Produkt se jmenuje ChatGPT Ads; „OpenAI“ zůstává jen tam, kde je to název API — proměnné `OPENAI_ADS_API_KEY*` a balík `oaiads` se **nemění**, `.env` ani skripty nic přepisovat nemusí. Kdo má skill nainstalovaný ze starého názvu: `mv ~/.claude/skills/openai-ads ~/.claude/skills/chatgpt-ads` a znovu krok 2 z `skill/INSTALL.md`.
+- **Přejmenováno na `chatgpt-ads-app`** (repo, složka, entrypoint `chatgpt_ads_cli.py`, skill `/chatgpt-ads`, placeholder `<CHATGPT_ADS_APP_DIR>`). Produkt se jmenuje ChatGPT Ads; „OpenAI“ zůstává jen tam, kde je to název API. Proměnné `OPENAI_ADS_API_KEY*` a balík `oaiads` se **nemění**, `.env` ani skripty nic přepisovat nemusí. Kdo má skill nainstalovaný ze starého názvu: `mv ~/.claude/skills/openai-ads ~/.claude/skills/chatgpt-ads` a znovu krok 2 z `skill/INSTALL.md`.
 
 ### 1.2.1
 
@@ -32,21 +37,21 @@ Appka vznikla jako součást ekosystému kurzu [AI First](https://aifirst.cz) �
 
 ### 1.2.0
 
-- **`plan-apply`**: celá kampaň (kampaň → sestavy s hints a UTM → reklamy se sdíleným obrázkem) z **jednoho JSON** — dry-run vytiskne strom s délkami textů a lintem, `--confirm` zakládá sekvenčně s Idempotency-Key a zapisuje ID do `plan.state.json`, takže přerušený běh navážeš stejným příkazem. Šablona: [docs/plan-example.json](docs/plan-example.json). Nahrazuje 25 samostatných volání z prvního pilotu.
+- **`plan-apply`**: celá kampaň (kampaň → sestavy s hints a UTM → reklamy se sdíleným obrázkem) z **jednoho JSON**: dry-run vytiskne strom s délkami textů a lintem, `--confirm` zakládá sekvenčně s Idempotency-Key a zapisuje ID do `plan.state.json`, takže přerušený běh navážeš stejným příkazem. Šablona: [docs/plan-example.json](docs/plan-example.json). Nahrazuje 25 samostatných volání z prvního pilotu.
 - **Po zápisu ověřeno živě**: `campaign-create/update`, `adgroup-create` (UTM šablona na sestavě se persistuje), `image-upload`, 18× `ad-create` (review do ~3 min), `ad-preview`. Listy jsou po zápisu pár sekund stale → `*-update` teď dotáhne detail a řekne to.
-- `campaign-detail --with-children` = celý strom včetně reklam a review; `ad-review` odděluje „čeká na review" od problémů; `--wide` na listech a `conversion-events`; `pulse` varuje, když kampaň cílí na jinou zemi, než naznačuje timezone účtu (past auto-generované kampaně = USA).
-- **Negativní klíčová slova na self-serve účtu nejsou** (`POST` → 404, `GET /ad_account` pole nevrací) — CLI to říká explicitně místo prázdného seznamu. Playbook: rozpočet jen na kampani (víc situací = víc sestav), bid minimum API nevynucuje, obrázek = malý čtvercový náhled bez textu, UTM konvence, pixel klientsky → ověřovat přes `conversion-events`.
+- `campaign-detail --with-children` = celý strom včetně reklam a review; `ad-review` odděluje „čeká na review“ od problémů; `--wide` na listech a `conversion-events`; `pulse` varuje, když kampaň cílí na jinou zemi, než naznačuje timezone účtu (past auto-generované kampaně = USA).
+- **Negativní klíčová slova na self-serve účtu nejsou** (`POST` → 404, `GET /ad_account` pole nevrací). CLI to říká explicitně místo prázdného seznamu. Playbook: rozpočet jen na kampani (víc situací = víc sestav), bid minimum API nevynucuje, obrázek = malý čtvercový náhled bez textu, UTM konvence, pixel klientsky → ověřovat přes `conversion-events`.
 
 ### 1.1.1
 
-- **Poprvé ověřeno proti živému účtu** (read-only): syntaxe `fields[]`, tvar chyb + `x-request-id`, gating (spend limit windows 404, Business Agents 403), CZ geo ids vč. PSČ, jak vypadá kampaň vygenerovaná Ads Managerem (**cílí defaultně na USA** — zkontroluj `campaign-detail`). Detaily v [docs/api-notes.md → Živě ověřeno](docs/api-notes.md).
-- `ad-review` odlišuje „nedoručuje, protože je pauza" od skutečných problémů; `raw --params` umí array parametry.
+- **Poprvé ověřeno proti živému účtu** (read-only): syntaxe `fields[]`, tvar chyb + `x-request-id`, gating (spend limit windows 404, Business Agents 403), CZ geo ids vč. PSČ, jak vypadá kampaň vygenerovaná Ads Managerem (**cílí defaultně na USA**, zkontroluj `campaign-detail`). Detaily v [docs/api-notes.md → Živě ověřeno](docs/api-notes.md).
+- `ad-review` odlišuje „nedoručuje, protože je pauza“ od skutečných problémů; `raw --params` umí array parametry.
 
 ### 1.1.0
 
 - **`conversion-check`**: audit měření pixel → event setting → napojení na kampaň → poslední pixel eventy (`--events`); vysvětlí gating (404 = pixely nezapnuté).
 - `--conversion-event-setting-id` na kampani má nově správnou sémantiku: na CPM/CPC = napojení eventu pro reporting (poslední krok, který se zapomíná), u oCPC přesně jeden standardní. `campaign-create` bez napojení varuje, `pulse` hlásí aktivní kampaně bez eventu.
-- Playbook: proč měřit konverze i na CPC, consent hook + CSP pro pixel, past „no permission to create ad accounts in your tenant" a cesta přes firemní e-mail + pozvánku.
+- Playbook: proč měřit konverze i na CPC, consent hook + CSP pro pixel, past „no permission to create ad accounts in your tenant“ a cesta přes firemní e-mail + pozvánku.
 
 ### 1.0.0
 
@@ -56,13 +61,13 @@ Appka vznikla jako součást ekosystému kurzu [AI First](https://aifirst.cz) �
 
 ## Dva způsoby, jak appku používat
 
-**A) Orchestrace přes Claude Code (doporučeno)** — appku řídí AI agent, ty zadáváš úkoly česky. Zkopíruj si tento prompt do Claude Code:
+**A) Orchestrace přes Claude Code (doporučeno)**: appku řídí AI agent, ty zadáváš úkoly česky. Zkopíruj si tento prompt do Claude Code:
 
-> Naklonuj si repo `https://github.com/faborsky/chatgpt-ads-app.git` do `~/dev/chatgpt-ads-app`, spusť `./setup.sh`, nainstaluj skill podle `skill/INSTALL.md` a proveď mě vyplněním `.env` (potřebuju API klíč z OpenAI Ads Manageru — postup je v README v sekci „Získání přístupů"). Pak ověř funkčnost přes `./run.sh account`.
+> Naklonuj si repo `https://github.com/faborsky/chatgpt-ads-app.git` do `~/dev/chatgpt-ads-app`, spusť `./setup.sh`, nainstaluj skill podle `skill/INSTALL.md` a proveď mě vyplněním `.env` (potřebuju API klíč z OpenAI Ads Manageru, postup je v README v sekci „Získání přístupů“). Pak ověř funkčnost přes `./run.sh account`.
 
 Skill `/chatgpt-ads` pak umí scénáře create / optimize / analyze / review-check / audiences / conversions / feeds se zabudovanými bezpečnostními pravidly (plán → schválení → zápis, paused starty, dry-run, policy checklist).
 
-**B) Vlastní automatizace** — CLI má stabilní `--json` výstupy, dry-run default, rate-limit budget a retry logiku, takže jde bezpečně volat ze skriptů, cronů nebo vlastních agentů:
+**B) Vlastní automatizace**: CLI má stabilní `--json` výstupy, dry-run default, rate-limit budget a retry logiku, takže jde bezpečně volat ze skriptů, cronů nebo vlastních agentů:
 
 ```bash
 ./run.sh campaigns --json | jq '.[].name'
@@ -89,7 +94,7 @@ cd chatgpt-ads-app
 
 ### Windows
 
-Skripty `setup.sh`/`run.sh` jsou bashové — na Windows použij **Git Bash** (součást [Git for Windows](https://git-scm.com/download/win)) nebo **WSL** a postup výše funguje beze změny. Alternativně čistý PowerShell:
+Skripty `setup.sh`/`run.sh` jsou bashové. Na Windows použij **Git Bash** (součást [Git for Windows](https://git-scm.com/download/win)) nebo **WSL** a postup výše funguje beze změny. Alternativně čistý PowerShell:
 
 ```powershell
 git clone https://github.com/faborsky/chatgpt-ads-app.git; cd chatgpt-ads-app
@@ -103,7 +108,7 @@ python chatgpt_ads_cli.py account
 
 ### 0) Advertiser účet (jednorázově)
 
-1. Založ účet na [ads.openai.com](https://ads.openai.com) (Ads Manager). Projdeš ověřením firmy a **brand review** — účet neservuje, dokud nemá schválený název, URL a **favicon** (min. 128 × 128 px). Přidej platební metodu.
+1. Založ účet na [ads.openai.com](https://ads.openai.com) (Ads Manager). Projdeš ověřením firmy a **brand review**. Účet neservuje, dokud nemá schválený název, URL a **favicon** (min. 128 × 128 px). Přidej platební metodu.
 2. Zkontroluj, že tvoje kategorie je povolená ([Ad policies](https://openai.com/policies/ad-policies/)): v první fázi spotřební zboží, lokální služby, cestování a zážitky, digitální produkty a vzdělávání. Finance / zdraví / právo jen schválení inzerenti v USA; alkohol, gambling, dating, politika, zbraně, jednotlivé job/housing inzeráty jsou zakázané. Shrnutí pro operátora: [skill/chatgpt-ads/chatgpt-ads-policies.md](skill/chatgpt-ads/chatgpt-ads-policies.md).
 
 ### 1) API klíč
@@ -127,11 +132,13 @@ OPENAI_ADS_API_KEY=<klíč>                       # jeden účet
 ./run.sh spend-limit-create --start 2026-09-02 --end 2026-10-01 --amount 500 --name "Září cap" --confirm
 ```
 
-**Spend limit window je account-level strop útraty** (start inkluzivní, konec exkluzivní). Nastav ho, než na účet s kartou pustíš agenta. **Pozor:** na self-serve účtu endpoint zatím vrací 404 (2026-09-02) — pak je pojistkou denní budget kampaně (útrata může být až 2× za den) + `--end`, a `pulse` na sledování.
+**Spend limit window je account-level strop útraty** (start inkluzivní, konec exkluzivní). Nastav ho, než na účet s kartou pustíš agenta. **Pozor:** na self-serve účtu endpoint zatím vrací 404 (2026-09-02). Pak je pojistkou denní budget kampaně (útrata může být až 2× za den) + `--end`, a `pulse` na sledování.
 
 ## Prerekvizity před první kampaní
 
-ChatGPT Ads jsou systémová integrace, ne položka v mediaplánu. Než něco pustíš, musí sedět: schválený brand review + platební metoda, **spend limit window**, landing page dostupná pro **OAI-AdsBot** (robots.txt i WAF/CDN), **oppref přežije redirecty**, nasazené měření (pixel a/nebo Conversions API se sdíleným event id, consent hook, CSP) **napojené na kampaň** — i na CPC, jinak porovnáváš CPC místo ceny za zákazníka, u e-shopů feed s `is_ads_eligible` a automatickou synchronizací (položky expirují po 14 dnech). Pozor na založení účtu: osobní účet nemá právo zakládat ad accounty v tenantu — funguje firemní e-mail + pozvánka (viz playbook §7). Všechno kromě měření ověří `./run.sh landing-check --url …` a `./run.sh account`. Kompletní checklist, pravidla pro context hints (popisuj situace, ne klíčová slova), doporučené délky textů (~16 / ~32 znaků), bidding a fakturační pasti: [skill/chatgpt-ads/chatgpt-ads-campaign-playbook.md](skill/chatgpt-ads/chatgpt-ads-campaign-playbook.md).
+ChatGPT Ads jsou systémová integrace, ne položka v mediaplánu. Než něco pustíš, musí sedět: schválený brand review + platební metoda, **spend limit window**, landing page dostupná pro **OAI-AdsBot** (robots.txt i WAF/CDN), **oppref přežije redirecty**, nasazené měření (pixel a/nebo Conversions API se sdíleným event id, consent hook, CSP) **napojené na kampaň** (i na CPC, jinak porovnáváš CPC místo ceny za zákazníka), u e-shopů feed s `is_ads_eligible` a automatickou synchronizací (položky expirují po 14 dnech).
+
+Pozor na založení účtu: osobní účet nemá právo zakládat ad accounty v tenantu. Funguje firemní e-mail + pozvánka (viz playbook §7). Všechno kromě měření ověří `./run.sh landing-check --url …` a `./run.sh account`. Kompletní checklist, pravidla pro context hints (popisuj situace, ne klíčová slova), doporučené délky textů (~16 / ~32 znaků), bidding a fakturační pasti: [skill/chatgpt-ads/chatgpt-ads-campaign-playbook.md](skill/chatgpt-ads/chatgpt-ads-campaign-playbook.md).
 
 ## Více účtů (agentury)
 
@@ -139,7 +146,7 @@ Jeden ad account = jedna právní entita, země a měna; agentura nebo firma s v
 
 1. **Jeden pojmenovaný klíč na účet** v `.env`: `OPENAI_ADS_API_KEY_ACME=…`, `OPENAI_ADS_API_KEY_BRANDX=…`. Název = slug klienta/značky. Bez „bare“ `OPENAI_ADS_API_KEY`, aby žádný účet nebyl implicitní.
 2. **Každé volání říká účet**: `./run.sh --account acme campaigns`. Při 2+ nakonfigurovaných účtech CLI volání bez `--account` **odmítne** a vypíše, co je k dispozici. Jediný nakonfigurovaný účet se vybere sám; kdo chce výchozí, nastaví `OPENAI_ADS_DEFAULT_ACCOUNT=acme`. Aktivní účet se u víc účtů tiskne na stderr jako `[account: acme]`.
-3. **Mapování projekt → účet nepatří do repa ani do sdíleného skillu** (je to klientské). Žije v privátní vrstvě: soubor `my-accounts.md` vedle skillu (šablona v [skill/INSTALL.md](skill/INSTALL.md)) nebo v projektové dokumentaci klienta. Skill se do něj podívá, a když projekt nemá řádek, **zeptá se** — nikdy nehádá.
+3. **Mapování projekt → účet nepatří do repa ani do sdíleného skillu** (je to klientské). Žije v privátní vrstvě: soubor `my-accounts.md` vedle skillu (šablona v [skill/INSTALL.md](skill/INSTALL.md)) nebo v projektové dokumentaci klienta. Skill se do něj podívá, a když projekt nemá řádek, **zeptá se**, nikdy nehádá.
 4. **Před prvním zápisem `account`**: jméno účtu, měna a timezone v odpovědi musí sedět na klienta. Lokální stav (`.usage/`) je per účet, takže rate budget jednoho klienta neblokuje druhého.
 5. Nový účet klienta: založí ho klient na svou entitu a pozve správce (viz playbook §7); klíč vydá v Ads Manageru účtu; správce ho uloží jako další `OPENAI_ADS_API_KEY_<NAZEV>` a přidá řádek do `my-accounts.md`.
 
@@ -154,29 +161,29 @@ cp docs/plan-example.json plan.json        # uprav: budget, end, location_ids, e
 ./run.sh plan-apply --file plan.json --confirm --update-existing   # a sesynchronizuje to (status nikdy; kreativa → nové review)
 ```
 
-Plán umí i `"campaign": {"id": "cmpn_existing"}` (jen přidat sestavy a reklamy do existující kampaně), `defaults` pro sestavy/reklamy, `hints_file` (řádek = hint), sdílený `image_file` nebo `image_url`, **celou UTM šablonu per sestava** přes `query_string_template` (kampaňovou šablonu nepoužívej — precedence kampaň vs. sestava není ověřená a sestavová může kampaňovou celou nahradit; lint na to upozorní).
+Plán umí i `"campaign": {"id": "cmpn_existing"}` (jen přidat sestavy a reklamy do existující kampaně), `defaults` pro sestavy/reklamy, `hints_file` (řádek = hint), sdílený `image_file` nebo `image_url`, **celou UTM šablonu per sestava** přes `query_string_template` (kampaňovou šablonu nepoužívej: precedence kampaň vs. sestava není ověřená a sestavová může kampaňovou celou nahradit; lint na to upozorní).
 
 **Velké plány** (stovky objektů): souhrn je před stromem, opakovaná lint varování jednoho druhu se skládají do jednoho řádku s počtem a maximem (`--verbose-lint` vypíše každé). Chyby proti spec limitům zůstávají u objektu.
 
-**Opakovaný běh** (stejný `plan.json` + `plan.state.json`): objekty ze stavu se nezakládají znovu; CLI přečte jejich detaily, porovná je s plánem a rozdíly vypíše (↻). Bez `--update-existing` se nic existujícího nemění (jen hlášení); s ním se sesynchronizují název, budget/end/targeting/napojené eventy, bidding (celý objekt, živé klíče zůstanou), hints, UTM šablona a kreativa (merge s živou; nový obrázek se nahraje jednou). `status` se nesynchronizuje nikdy — aktivace a pauza jsou vždy explicitní `*-activate` / `*-pause`. Klíč odstraněný z plánu se na objektu nemaže.
+**Opakovaný běh** (stejný `plan.json` + `plan.state.json`): objekty ze stavu se nezakládají znovu; CLI přečte jejich detaily, porovná je s plánem a rozdíly vypíše (↻). Bez `--update-existing` se nic existujícího nemění (jen hlášení); s ním se sesynchronizují název, budget/end/targeting/napojené eventy, bidding (celý objekt, živé klíče zůstanou), hints, UTM šablona a kreativa (merge s živou; nový obrázek se nahraje jednou). `status` se nesynchronizuje nikdy: aktivace a pauza jsou vždy explicitní `*-activate` / `*-pause`. Klíč odstraněný z plánu se na objektu nemaže.
 
-## Použití — konvence
+## Konvence použití
 
 - **Zápisy jsou defaultně dry-run**: příkaz vytiskne přesný request, který by poslal, a nic neodešle. `--confirm` provede. API nemá server-side `validate_only` pro jednotlivé objekty, takže dry-run = lokální lint + plán. Výjimky: `image-upload`/`file-upload` zapisují rovnou (jen média, žádná útrata); `bulk-submit` bez `--confirm` pošle **validační job** (`validate_only: true`, oficiálně nic nemění).
 - **Vše vzniká `paused`** (`--status` default). Aktivace jen přes `*-activate` / `--status active` + `--confirm`.
 - **Archivace je nevratná** (delete neexistuje). `*-archive` odmítne nezapauzovaný objekt bez `--force`.
-- **Peníze v měně účtu** (`account` → `currency_code`, typicky USD). Flagy berou jednotky měny (`--lifetime-budget 250`), API dostane micros (×1 000 000). `--max-bid` je **per event**; pro CPM kampaně je pohodlnější `--max-cpm 40` (= 40 000 micros per impression). U oCPC je `--max-bid` CPA bid.
+- **Peníze v měně účtu** (`account` → `currency_code`, typicky USD). Flagy berou jednotky měny (`--lifetime-budget 250`), API dostane micros (×1 000 000). `--max-bid` je **per event**; pro CPM kampaně je pohodlnější `--max-cpm 40` (= 40 000 micros per impression). U oCPC je `--max-bid` CPA bid.
 - **Časy**: `--start/--end` jako `YYYY-MM-DD`, ISO 8601 nebo unix sekundy. Insights okna se počítají v timezone účtu a defaultně končí **včerejškem** (dnešní atribuce je předběžná, budoucí meze API odmítá).
 - **Idempotence**: každý create nese automaticky `Idempotency-Key` (vytiskne se); stejný request zopakuješ bezpečně přes `--idempotency-key <klíč>`. Zápisy bez idempotence CLI nikdy neretryuje a řekne ti, že zápis mohl projít.
-- **Listy** skrývají `archived` (`--all` je ukáže, `--status` filtruje lokálně — API filtruje jen `name`); stránkují až do konce (`--max-items` omezí, kolik se stáhne; `--limit N` u `campaigns`/`adgroups`/`ads` jen ořízne, kolik řádků se ukáže).
+- **Listy** skrývají `archived` (`--all` je ukáže, `--status` filtruje lokálně: API filtruje jen `name`); stránkují až do konce (`--max-items` omezí, kolik se stáhne; `--limit N` u `campaigns`/`adgroups`/`ads` jen ořízne, kolik řádků se ukáže).
 - Programově parsuj jen `--json` (chyby jdou na stderr, stdout zůstává prázdný). **Tvar výstupu:** výpisy (`campaigns`, `adgroups`, `ads`, `ad-review`, `audiences`, `feeds`, `pixels`, `event-settings`, `lead-forms`…), `geo-search`, `insights` a `conversion-insights` vrací **holé JSON pole** (bez obalu `data`); detaily (`*-detail`, `account`), `pulse`, `conversion-check`, `landing-check`, `api-limits` vrací **objekt**; zápisy vrací v dry-runu `{"executed": false, "plan": {…}}` a po `--confirm` odpověď API (u update/stavových přechodů navíc `_verified`, `_verified_matches`), `plan-apply` `{"executed": …, "plan"|"created": …}`.
-- **Ověření po zápisu** (`*-update`, `*-activate/pause/archive`): CLI přečte detail až 3× s pauzou 1,5 s a „Verified via detail“ napíše jen když očekávaná pole sedí (`status`, resp. `name`/`status` z requestu). Když detail pořád ukazuje starý stav, řekne to — zápis prošel, API je eventually consistent, zkontroluj `*-detail` za pár sekund a nezapisuj znovu.
+- **Ověření po zápisu** (`*-update`, `*-activate/pause/archive`): CLI přečte detail až 3× s pauzou 1,5 s a „Verified via detail“ napíše jen když očekávaná pole sedí (`status`, resp. `name`/`status` z requestu). Když detail pořád ukazuje starý stav, řekne to: zápis prošel, API je eventually consistent, zkontroluj `*-detail` za pár sekund a nezapisuj znovu.
 - `--ad-group-id` má alias `--adgroup-id` (příkazy jsou `adgroup-*`).
 - Víc účtů: `--account <name>` (globální flag před příkazem) → `OPENAI_ADS_API_KEY_<NAME>`; při 2+ účtech je povinný (viz Více účtů).
 
 ### Ochrana účtu (rate limity)
 
-API limituje **600 req/min na endpoint a 1 200 req/min celkem, per ad account i per IP**; bulk joby 10 / 10 s. Usage API nevrací, proto si CLI vede vlastní klouzavé okno v `.usage/` a od 80 % limitu čeká (`api-limits` ukáže stav; `OAIADS_IGNORE_RATE_BUDGET=1` vypne). 429 retryuje s ohledem na `Retry-After`. Nespouštěj víc instancí paralelně.
+API limituje **600 req/min na endpoint a 1 200 req/min celkem, per ad account i per IP**; bulk joby 10 / 10 s. Usage API nevrací, proto si CLI vede vlastní klouzavé okno v `.usage/` a od 80 % limitu čeká (`api-limits` ukáže stav; `OAIADS_IGNORE_RATE_BUDGET=1` vypne). 429 retryuje s ohledem na `Retry-After`. Nespouštěj víc instancí paralelně.
 
 ## Příkazy
 
@@ -187,7 +194,7 @@ API limituje **600 req/min na endpoint a 1 200 req/min celkem, per ad account i 
 | `account` | Účet: status, brand review, měna, tz, negativní klíčová slova, spend capy | `--json` |
 | `accounts` | Účty dostupné s tímto klíčem + lokálně nakonfigurované | |
 | `brand-update` [write] | Název / URL / favicon účtu → nový brand review | `--name`, `--url`, `--favicon-file-id` |
-| `negative-keywords` | Account-level negativní klíčová slova (na self-serve účtu zatím nedostupné — CLI to hlásí) | |
+| `negative-keywords` | Account-level negativní klíčová slova (na self-serve účtu zatím nedostupné, CLI to hlásí) | |
 | `negative-keywords-set` [write] | **Nahradí** celý seznam (max 100 × 100 znaků) | `--keywords a,b`, `--keywords-file` |
 | `negative-keywords-add` / `negative-keywords-remove` [write] | Přidá / odebere (read-modify-write) | `--keywords` |
 | `spend-limits` | Spend limit windows (strop útraty účtu) | |
@@ -228,7 +235,7 @@ API limituje **600 req/min na endpoint a 1 200 req/min celkem, per ad account i 
 | `ads` | Seznam po ad group / kampani / celém účtu | `--ad-group-id`, `--campaign-id`, `--review-status`, `--status`, `--all`, `--include-issues`, `--limit` |
 | `ad-detail` | Detail vč. kreativy, review reason, appeal, issues | `--ad-id` |
 | `ad-review` | Reklamy zamítnuté / se skutečnými serving issues + důvody; „čeká na review“ a „neběží jen kvůli pauze“ zvlášť (nejsou problém; v JSON `_attention: problem\|waiting`) | `--ad-id`, `--campaign-id`, `--ad-group-id` |
-| `ad-create` [write] | Nová reklama (paused) — `chat_card` nebo `product_ad_template`; lint titulku 3–50, body ≤ 100, URL | `--ad-group-id`, `--name`, `--title`, `--body`, `--target-url`, `--file-id` / `--image-url` / `--image-file`, `--price`, `--type`, `--crop x,y,w,h`, `--creative-json`, `--query-string-template` |
+| `ad-create` [write] | Nová reklama (paused): `chat_card` nebo `product_ad_template`; lint titulku 3–50, body ≤ 100, URL | `--ad-group-id`, `--name`, `--title`, `--body`, `--target-url`, `--file-id` / `--image-url` / `--image-file`, `--price`, `--type`, `--crop x,y,w,h`, `--creative-json`, `--query-string-template` |
 | `ad-update` [write] | Úprava (kreativa se pošle celá → re-review) | totéž + `--ad-id`, `--status` |
 | `ad-preview` | Náhled (iframe, platí ~24 h) | `--ad-id`, `--out preview.html` |
 | `ad-activate` / `ad-pause` / `ad-archive` [write] | Stavové přechody | `--ad-id`, `--force` |
@@ -349,8 +356,8 @@ python scripts/check_docs_consistency.py   # CLI ↔ README ↔ CLAUDE.md ↔ sk
 
 ## Dokumentace
 
-- [docs/api-notes.md](docs/api-notes.md) — jak se Advertiser API chová (limity, stavy, review, peníze, insights, audiences, konverze, feedy, bulk, idempotence, chyby) + seznam věcí k ověření živě
-- [CLAUDE.md](CLAUDE.md) — technický signpost pro Claude Code (struktura kódu, safety, release checklist)
+- [docs/api-notes.md](docs/api-notes.md): jak se Advertiser API chová (limity, stavy, review, peníze, insights, audiences, konverze, feedy, bulk, idempotence, chyby) + seznam věcí k ověření živě
+- [CLAUDE.md](CLAUDE.md): technický signpost pro Claude Code (struktura kódu, safety, release checklist)
 - [CHANGELOG.md](CHANGELOG.md)
 - Oficiální zdroje: [developers.openai.com/ads](https://developers.openai.com/ads), [OpenAPI spec](https://developers.openai.com/ads/openapi.json), [Ad policies](https://openai.com/policies/ad-policies/)
 
@@ -360,4 +367,4 @@ GitHub Issues v tomto repu. U chyb API přilož výstup s `--json` (klíč se do
 
 ## Licence
 
-MIT — viz [LICENSE](LICENSE).
+MIT, viz [LICENSE](LICENSE).
