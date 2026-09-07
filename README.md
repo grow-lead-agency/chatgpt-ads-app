@@ -1,12 +1,18 @@
 # ChatGPT Ads App
 
-**Verze 1.4.0** · Python CLI pro reklamy v ChatGPT přes **OpenAI Advertiser API v1** (OpenAPI spec 2.3.0) — 96 příkazů, všech 88 operací ze specifikace + Bulk API + `plan-apply` + `raw` escape hatch. Stavěné pro orchestraci AI agentem (Claude Code) i pro vlastní automatizace: `--json` výstupy, dry-run zápisy, idempotence, vlastní rate-limit budget.
+**Verze 1.4.1** · Python CLI pro reklamy v ChatGPT přes **OpenAI Advertiser API v1** (OpenAPI spec 2.3.0) — 96 příkazů, všech 88 operací ze specifikace + Bulk API + `plan-apply` + `raw` escape hatch. Stavěné pro orchestraci AI agentem (Claude Code) i pro vlastní automatizace: `--json` výstupy, dry-run zápisy, idempotence, vlastní rate-limit budget.
 
 Appka vznikla jako součást ekosystému kurzu [AI First](https://aifirst.cz) — praktická ukázka, jak si marketér může nechat AI postavit a řídit vlastní nástroje nad úplně novou reklamní platformou. Novinky sleduj přes **Watch → Custom → Releases** na GitHubu, changelog je v [CHANGELOG.md](CHANGELOG.md).
 
 > ✅ **Stav:** čtení i zápisy (kampaň, sestavy, reklamy, upload, preview) ověřené v ostrém provozu na self-serve účtu (2026-09-02). Co zbývá ověřit: [docs/api-notes.md → Neověřeno živě](docs/api-notes.md). Dry-run (bez `--confirm`) nic neposílá.
 
-## 🆕 Co je nového (1.4.0)
+## 🆕 Co je nového (1.4.1)
+
+- **Ověření po zápisu už neklame**: detail je po zápisu chvíli zastaralý (pauza sestavy → re-read ještě říkal `active`). CLI ho teď čte až 3× s pauzou a „Verified via detail“ napíše jen když očekávaný stav sedí; jinak řekne, že detail ještě ukazuje starý stav a ať se zkontroluje `*-detail` za pár sekund.
+- **`plan-apply` na stovky objektů**: souhrn (počty, zápisy, odhad délky běhu) je **před** stromem, opakovaná lint varování se skládají do jednoho řádku s počtem (`--verbose-lint` je rozepíše).
+- `--limit N` u výpisů `campaigns` / `adgroups` / `ads`; README popisuje tvar `--json` výstupu (výpisy = pole, detaily = objekt).
+
+### 1.4.0
 
 - **Opravy z týdne ostrého provozu**: `plan-apply --file plan.json --confirm` už nepadá na relativní cestě (stav se zapisoval do `plan.state.json` bez adresáře — spadlo to až v ostrém běhu, před založením kampaně); `pulse` nehlásí falešný poplach u reklam v záměrně pozastavené sestavě a `ad-review` nedává čerstvě založené reklamy (`ad_in_review`) pod „Problems“ — oba sdílejí jednu klasifikaci (pauza v hierarchii a review = očekávaný stav, ne problém); konverze v `pulse` už nevrací HTTP 400 (server defaultuje `group_by_entity=true` a chce `entity_ids`).
 - **`plan-apply --update-existing`**: opakovaný běh porovná plán s živými objekty a rozdíly vypíše (↻); s flagem je sesynchronizuje (název, budget/end/targeting, bidding, hints, UTM, kreativa → nové review). `status` nikdy nemění. Bez flagu jen hlásí, kolik objektů se liší — dřív se změny v plánu tiše ignorovaly.
@@ -141,7 +147,7 @@ Jeden ad account = jedna právní entita, země a měna; agentura nebo firma s v
 
 ```bash
 cp docs/plan-example.json plan.json        # uprav: budget, end, location_ids, event setting, hints, texty, obrázek
-./run.sh plan-apply --file plan.json       # dry-run: strom kampaně, délky textů, lint — nic se neposílá
+./run.sh plan-apply --file plan.json       # dry-run: souhrn (počty, zápisy, odhad délky běhu) + strom kampaně + lint — nic se neposílá
 ./run.sh plan-apply --file plan.json --confirm   # založí kampaň → sestavy → reklamy (paused), resume přes plan.state.json
 ./run.sh campaign-detail --campaign-id cmpn_… --with-children   # ověření stromu + review
 ./run.sh plan-apply --file plan.json                    # po úpravě plánu: ↻ ukáže, co se liší od živých objektů
@@ -149,6 +155,8 @@ cp docs/plan-example.json plan.json        # uprav: budget, end, location_ids, e
 ```
 
 Plán umí i `"campaign": {"id": "cmpn_existing"}` (jen přidat sestavy a reklamy do existující kampaně), `defaults` pro sestavy/reklamy, `hints_file` (řádek = hint), sdílený `image_file` nebo `image_url`, **celou UTM šablonu per sestava** přes `query_string_template` (kampaňovou šablonu nepoužívej — precedence kampaň vs. sestava není ověřená a sestavová může kampaňovou celou nahradit; lint na to upozorní).
+
+**Velké plány** (stovky objektů): souhrn je před stromem, opakovaná lint varování jednoho druhu se skládají do jednoho řádku s počtem a maximem (`--verbose-lint` vypíše každé). Chyby proti spec limitům zůstávají u objektu.
 
 **Opakovaný běh** (stejný `plan.json` + `plan.state.json`): objekty ze stavu se nezakládají znovu; CLI přečte jejich detaily, porovná je s plánem a rozdíly vypíše (↻). Bez `--update-existing` se nic existujícího nemění (jen hlášení); s ním se sesynchronizují název, budget/end/targeting/napojené eventy, bidding (celý objekt, živé klíče zůstanou), hints, UTM šablona a kreativa (merge s živou; nový obrázek se nahraje jednou). `status` se nesynchronizuje nikdy — aktivace a pauza jsou vždy explicitní `*-activate` / `*-pause`. Klíč odstraněný z plánu se na objektu nemaže.
 
@@ -160,8 +168,9 @@ Plán umí i `"campaign": {"id": "cmpn_existing"}` (jen přidat sestavy a reklam
 - **Peníze v měně účtu** (`account` → `currency_code`, typicky USD). Flagy berou jednotky měny (`--lifetime-budget 250`), API dostane micros (×1 000 000). `--max-bid` je **per event**; pro CPM kampaně je pohodlnější `--max-cpm 40` (= 40 000 micros per impression). U oCPC je `--max-bid` CPA bid.
 - **Časy**: `--start/--end` jako `YYYY-MM-DD`, ISO 8601 nebo unix sekundy. Insights okna se počítají v timezone účtu a defaultně končí **včerejškem** (dnešní atribuce je předběžná, budoucí meze API odmítá).
 - **Idempotence**: každý create nese automaticky `Idempotency-Key` (vytiskne se); stejný request zopakuješ bezpečně přes `--idempotency-key <klíč>`. Zápisy bez idempotence CLI nikdy neretryuje a řekne ti, že zápis mohl projít.
-- **Listy** skrývají `archived` (`--all` je ukáže, `--status` filtruje lokálně — API filtruje jen `name`); stránkují až do konce (`--max-items`).
-- Programově parsuj jen `--json` (chyby jdou na stderr, stdout zůstává prázdný).
+- **Listy** skrývají `archived` (`--all` je ukáže, `--status` filtruje lokálně — API filtruje jen `name`); stránkují až do konce (`--max-items` omezí, kolik se stáhne; `--limit N` u `campaigns`/`adgroups`/`ads` jen ořízne, kolik řádků se ukáže).
+- Programově parsuj jen `--json` (chyby jdou na stderr, stdout zůstává prázdný). **Tvar výstupu:** výpisy (`campaigns`, `adgroups`, `ads`, `ad-review`, `audiences`, `feeds`, `pixels`, `event-settings`, `lead-forms`…), `geo-search`, `insights` a `conversion-insights` vrací **holé JSON pole** (bez obalu `data`); detaily (`*-detail`, `account`), `pulse`, `conversion-check`, `landing-check`, `api-limits` vrací **objekt**; zápisy vrací v dry-runu `{"executed": false, "plan": {…}}` a po `--confirm` odpověď API (u update/stavových přechodů navíc `_verified`, `_verified_matches`), `plan-apply` `{"executed": …, "plan"|"created": …}`.
+- **Ověření po zápisu** (`*-update`, `*-activate/pause/archive`): CLI přečte detail až 3× s pauzou 1,5 s a „Verified via detail“ napíše jen když očekávaná pole sedí (`status`, resp. `name`/`status` z requestu). Když detail pořád ukazuje starý stav, řekne to — zápis prošel, API je eventually consistent, zkontroluj `*-detail` za pár sekund a nezapisuj znovu.
 - `--ad-group-id` má alias `--adgroup-id` (příkazy jsou `adgroup-*`).
 - Víc účtů: `--account <name>` (globální flag před příkazem) → `OPENAI_ADS_API_KEY_<NAME>`; při 2+ účtech je povinný (viz Více účtů).
 
@@ -193,11 +202,11 @@ API limituje **600 req/min na endpoint a 1 200 req/min celkem, per ad account i 
 
 | Příkaz | Co dělá | Klíčové flagy |
 |---|---|---|
-| `campaigns` | Seznam (archived skryté) | `--status`, `--all`, `--name`, `--include-issues`, `--order`, `--wide` |
+| `campaigns` | Seznam (archived skryté) | `--status`, `--all`, `--name`, `--include-issues`, `--order`, `--wide`, `--limit` |
 | `campaign-detail` | Detail vč. targetingu a serving issues; `--with-children` = celý strom (sestavy + reklamy + review) | `--campaign-id`, `--with-children` |
 | `campaign-create` [write] | Nová kampaň (paused) | `--name`, `--lifetime-budget` / `--daily-budget`, `--bidding-type impressions\|clicks\|conversions`, `--countries CZ,SK`, `--location-ids`, `--exclude-location-ids`, `--audience-ids`, `--exclude-audience-ids`, `--platforms web,ios_app,android_app`, `--start`, `--end`, `--description`, `--conversion-event-setting-id` (napojení eventu pro reporting; u oCPC přesně jeden), `--mode` + `--product-feed-id` / `--business-agent-id`, `--query-string-template`, `--targeting-json` |
 | `campaign-update` [write] | Úprava (budget = celý objekt, targeting se mergne); po zápisu dotáhne detail | totéž + `--campaign-id`, `--status`, `--clear-end-time`, `--clear-targeting` |
-| `plan-apply` [write] | **Celá kampaň z jednoho JSON** (kampaň → sestavy → reklamy), dry-run = strom + lint, `--confirm` = sekvenční zápis s resume přes `plan.state.json`; opakovaný běh vypíše rozdíly (↻) a s `--update-existing` je sesynchronizuje (status nikdy) | `--file plan.json`, `--state`, `--update-existing` |
+| `plan-apply` [write] | **Celá kampaň z jednoho JSON** (kampaň → sestavy → reklamy), dry-run = strom + lint, `--confirm` = sekvenční zápis s resume přes `plan.state.json`; opakovaný běh vypíše rozdíly (↻) a s `--update-existing` je sesynchronizuje (status nikdy) | `--file plan.json`, `--state`, `--update-existing`, `--verbose-lint` |
 | `campaign-activate` / `campaign-pause` / `campaign-archive` [write] | Stavové přechody (archive nevratný, brzda na paused) | `--campaign-id`, `--force` |
 
 `bidding_type`, `mode` a oCPC event setting **po vytvoření nejde změnit**.
@@ -206,7 +215,7 @@ API limituje **600 req/min na endpoint a 1 200 req/min celkem, per ad account i 
 
 | Příkaz | Co dělá | Klíčové flagy |
 |---|---|---|
-| `adgroups` | Seznam (volitelně po kampani) | `--campaign-id`, `--status`, `--all`, `--name`, `--include-issues` |
+| `adgroups` | Seznam (volitelně po kampani) | `--campaign-id`, `--status`, `--all`, `--name`, `--include-issues`, `--limit` |
 | `adgroup-detail` | Detail vč. biddingu, hints, product setu | `--ad-group-id`, `--with-children` |
 | `adgroup-create` [write] | Nová ad group (paused); billing event se odvodí z kampaně | `--campaign-id`, `--name`, `--max-bid` (per event) / `--max-cpm`, `--billing-event impression\|click`, `--strategy fixed_bid\|maximize_clicks\|maximize_conversions`, `--hints "a, b"` (opak.), `--hints-file`, `--audience-multiplier caud=2.0`, `--product-feed-id` + `--product-filter brand:in:X\|Y`, `--product-set-json`, `--description`, `--query-string-template` |
 | `adgroup-update` [write] | Úprava (bidding_config se pošle celý, hints se nahradí) | totéž + `--ad-group-id`, `--status` |
@@ -216,7 +225,7 @@ API limituje **600 req/min na endpoint a 1 200 req/min celkem, per ad account i 
 
 | Příkaz | Co dělá | Klíčové flagy |
 |---|---|---|
-| `ads` | Seznam po ad group / kampani / celém účtu | `--ad-group-id`, `--campaign-id`, `--review-status`, `--status`, `--all`, `--include-issues` |
+| `ads` | Seznam po ad group / kampani / celém účtu | `--ad-group-id`, `--campaign-id`, `--review-status`, `--status`, `--all`, `--include-issues`, `--limit` |
 | `ad-detail` | Detail vč. kreativy, review reason, appeal, issues | `--ad-id` |
 | `ad-review` | Reklamy zamítnuté / se skutečnými serving issues + důvody; „čeká na review“ a „neběží jen kvůli pauze“ zvlášť (nejsou problém; v JSON `_attention: problem\|waiting`) | `--ad-id`, `--campaign-id`, `--ad-group-id` |
 | `ad-create` [write] | Nová reklama (paused) — `chat_card` nebo `product_ad_template`; lint titulku 3–50, body ≤ 100, URL | `--ad-group-id`, `--name`, `--title`, `--body`, `--target-url`, `--file-id` / `--image-url` / `--image-file`, `--price`, `--type`, `--crop x,y,w,h`, `--creative-json`, `--query-string-template` |

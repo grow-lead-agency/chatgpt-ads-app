@@ -119,6 +119,8 @@ def _list_args(sp, *, name_filter: bool = True, issues: bool = True) -> None:
     sp.add_argument("--order", choices=["asc", "desc"])
     sp.add_argument("--wide", action="store_true", help="Do not truncate names/URLs in tables")
     sp.add_argument("--max-items", type=int, default=api.LIST_HARD_CAP, help="Paging cap (default 5000)")
+    sp.add_argument("--limit", dest="list_limit", type=int,
+                    help="Show at most N rows (after local filters). Paging is automatic; --max-items caps what is fetched")
 
 
 def _targeting_args(sp) -> None:
@@ -535,6 +537,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = _cmd(sub, "plan-apply", cmd_plan_apply, "Create campaign → ad groups → ads from one JSON plan (resumable)", write=True)
     sp.add_argument("--file", required=True, help="Plan JSON (see docs/plan-example.json)")
     sp.add_argument("--state", help="State file (default <plan>.state.json) — records created ids for resume")
+    sp.add_argument("--verbose-lint", action="store_true",
+                    help="List every lint warning (default folds repeated warnings of one kind into a counted line)")
     sp.add_argument("--update-existing", action="store_true",
                     help="Also sync objects created by an earlier run whose plan values changed (name, budget/end/targeting, "
                          "bidding, hints, UTM, creative). Never touches status; creative changes re-trigger review.")

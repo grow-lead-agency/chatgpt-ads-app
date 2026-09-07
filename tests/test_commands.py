@@ -870,3 +870,97 @@ def test_plan_apply_rerun_unreadable_object_is_skipped_not_recreated(fake_api, t
     run(["plan-apply", "--file", str(p), "--confirm", "--update-existing"])
     assert not writes(calls)
     assert "could not read 1 existing object(s) (G)" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Second batch of live findings 2026-09-07 (#9–#13)
+# ---------------------------------------------------------------------------
+
+def test_state_change_verify_retries_until_status_matches(fake_api, capsys):
+    """#9: the immediate re-read after a pause still said `active` and 'Verified via detail' read as a failed write."""
+    calls, answers = fake_api
+    answers["POST /ad_groups/adgrp_1/pause"] = {"id": "adgrp_1"}
+    answers["GET /ad_groups/adgrp_1"] = [{"id": "adgrp_1", "name": "G", "status": "active"},   # stale
+                                         {"id": "adgrp_1", "name": "G", "status": "paused"}]   # fresh
+    run(["adgroup-pause", "--ad-group-id", "adgrp_1", "--confirm"])
+    gets = [c for c in calls if c["method"] == "GET" and c["path"] == "/ad_groups/adgrp_1"]
+    assert len(gets) == 2, "re-read until the expected status shows up"
+    out = capsys.readouterr().out
+    assert "Verified via detail (status match)" in out and '"status": "paused"' in out
+
+
+def test_state_change_verify_reports_stale_detail_honestly(fake_api, capsys):
+    calls, answers = fake_api
+    answers["POST /ad_groups/adgrp_1/pause"] = {"id": "adgrp_1"}
+    answers["GET /ad_groups/adgrp_1"] = {"id": "adgrp_1", "name": "G", "status": "active"}   # never catches up
+    run(["adgroup-pause", "--ad-group-id", "adgrp_1", "--confirm"])
+    gets = [c for c in calls if c["method"] == "GET" and c["path"] == "/ad_groups/adgrp_1"]
+    assert len(gets) == 3
+    out = capsys.readouterr().out
+    assert "Verified" not in out
+    assert "⚠ Detail still shows the OLD state after 3 reads" in out and "eventually consistent" in out and "*-detail" in out
+    run(["adgroup-pause", "--ad-group-id", "adgrp_1", "--confirm", "--json"])
+    resp = json.loads(capsys.readouterr().out)
+    assert resp["_verified_matches"] is False and resp["_verified_expect"] == {"status": "paused"}
+
+
+def test_update_verify_uses_body_name_and_status(fake_api, capsys):
+    _, answers = fake_api
+    answers["POST /campaigns/cmpn_1"] = {"id": "cmpn_1"}
+    answers["GET /campaigns/cmpn_1"] = [{"id": "cmpn_1", "name": "Old", "status": "paused"},
+                                        {"id": "cmpn_1", "name": "New", "status": "paused"}]
+    run(["campaign-update", "--campaign-id", "cmpn_1", "--name", "New", "--confirm", "--json"])
+    resp = json.loads(capsys.readouterr().out)
+    assert resp["_verified_matches"] is True and resp["_verified"]["name"] == "New"
+
+
+def test_plan_apply_dry_run_summary_header_before_tree(fake_api, tmp_path, capsys):
+    """#11: with hundreds of objects the counts came only after ~500 tree lines; no write count or run-time estimate at all."""
+    p = _write_plan(tmp_path)
+    run(["plan-apply", "--file", str(p)])
+    out = capsys.readouterr().out
+    assert out.index("create:") < out.index("tree (") < out.index("├─")
+    assert "create:   1 campaign, 2 ad group(s), 3 ad(s) = 6 write(s) + 1 image upload(s)" in out
+    assert "existing: 0\n" in out
+    assert "writes:   6 total, rough run time ~4 s" in out
+    run(["plan-apply", "--file", str(p), "--json"])
+    plan = json.loads(capsys.readouterr().out)["plan"]
+    assert plan["image_uploads_remaining"] == 1 and plan["estimated_run_time"] == "~4 s"
+
+
+def test_plan_run_time_estimate_uses_pacing_for_big_plans():
+    from oaiads.commands.plan import estimate_run_seconds, fmt_duration
+    assert estimate_run_seconds(7, 3) == 3.5
+    assert fmt_duration(estimate_run_seconds(600, 450)) == "~5 min"
+
+
+def test_plan_apply_folds_length_warnings_unless_verbose(fake_api, tmp_path, capsys):
+    p = _write_plan(tmp_path)
+    plan = json.loads(p.read_text(encoding="utf-8"))
+    for g in plan["ad_groups"]:
+        for a in g["ads"]:
+            a["title"] = "Dlouhý titulek reklamy 1234"   # 27 chars > recommended 16, < max 50
+    p.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+    run(["plan-apply", "--file", str(p)])
+    err = capsys.readouterr().err
+    assert "⚠ 3× creative.title is N chars — OpenAI recommends ~16" in err and "[N up to 27]" in err
+    run(["plan-apply", "--file", str(p), "--verbose-lint"])
+    err = capsys.readouterr().err
+    assert err.count("creative.title is 27 chars") == 3 and "×" not in err
+
+
+def test_list_limit_caps_rows_after_local_filters(fake_api, capsys):
+    """#13: `ads --limit 5` was an argparse error; now a client-side cap (paging stays automatic)."""
+    _, answers = fake_api
+    answers["GET /ads"] = {"data": [{"id": f"ad_{i}", "status": "active", "creative": {}} for i in range(5)]
+                           + [{"id": "ad_arch", "status": "archived", "creative": {}}], "has_more": False}
+    run(["ads", "--limit", "2", "--json"])
+    cap = capsys.readouterr()
+    assert [r["id"] for r in json.loads(cap.out)] == ["ad_0", "ad_1"]
+    assert "showing the first 2 of 5 rows" in cap.err
+    answers["GET /campaigns"] = {"data": [{"id": "c1", "status": "active"}, {"id": "c2", "status": "active"}], "has_more": False}
+    run(["campaigns", "--limit", "5", "--json"])
+    cap = capsys.readouterr()
+    assert len(json.loads(cap.out)) == 2 and "showing" not in cap.err
+    args = build_parser().parse_args(["adgroups", "--limit", "3"])
+    assert args.list_limit == 3

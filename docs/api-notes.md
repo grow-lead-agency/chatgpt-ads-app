@@ -169,13 +169,23 @@ Sem zapisuj, co se při reálném používání rozbilo nebo chovalo jinak, než
 - ⚪ Příkazy `adgroup-*` vs. flag `--ad-group-id` → alias `--adgroup-id`.
 - Není chyba appky: `spend_limit_windows` a `negative_keywords` → 404 (nenasazené endpointy); report „na jaké konverzace se reklama spárovala“ platforma neposkytuje.
 
+### 2026-09-07, druhá dávka — nasazení kampaně se stovkami sestav a reklam přes `plan-apply` (v1.4.0) → opraveno v 1.4.1
+
+- 🟠 **Detail je po zápisu zastaralý stejně jako list**: `adgroup-pause` → „pause done“, ale okamžitý re-read detailu ještě `status: active`, o chvíli později `paused` (u všech pauznutých sestav). Řádek „Verified via detail“ tak tvrdil opak toho, co se stalo. Fix: `run_write` čte detail až 3× s pauzou 1,5 s, „verified“ jen při shodě očekávaných polí, jinak explicitní „still shows the OLD state“.
+- 🟠 Lint u plánu se stovkami reklam vytiskl ~700 řádků varování o délce titulku/popisku a strom se v nich ztratil. Fix: varování jednoho druhu se skládají do jednoho řádku s počtem a maximem; `--verbose-lint` rozepíše.
+- 🟡 Dry-run neměl souhrn před stromem (počty, zápisy, odhad délky). Fix: hlavička `create / existing / writes (+ rough run time) / state` před stromem; v `--json` `estimated_run_time`, `image_uploads_remaining`.
+- 🟡 `insights --json` vrací holé pole, jiné příkazy objekt — není chyba, jen to nebylo v README. Fix: README → Použití, tvar výstupu per skupina.
+- 🟡 `ads/adgroups/campaigns --limit` byla argparse chyba (README `--limit` uváděl jen u `feed-uploads`/`insights`). Fix: `--limit N` = klientský strop na řádky; stránkování zůstává automatické.
+- ✅ **Potvrzeno v provozu (v1.4.0):** `plan-apply` s absolutní cestou a stovkami objektů proběhl bez jediného 429 a bez pádu; `ad-review` po zápisu hlásí „0 problem(s), N in review, M fine (M not serving only because … paused)“ — přesně rozlišení z nálezů 2 a 3; ↻/✓ v dry-runu opakovaného běhu sedí.
+- ℹ️ **Nepotvrzeno:** podezření na pomalý `campaign-detail --with-children` u stovek objektů — první běh vypršel jen proto, že šel souběžně s aktivací stovek objektů a CLI čekalo na vlastní rate-limit rozpočet (80 %); opakované měření 0 s. Chování je správné.
+
 ### 2026-09-02 — první ostrý zápis (pilot: 1 kampaň, 7 ad groups, 18 ads)
 
 Zkráceně (plné znění interního reportu je mimo repo):
 
 - ✅ Živě prošlo: `campaign-create` (daily budget, `location_ids`, `end_time`, **dva** `conversion_event_setting_ids` na CPC = oba napojené), `campaign-update` (name + budget + end + targeting merge), `adgroup-create` (`fixed_bid` + `max_bid_micros`, `--hints-file` 20 řádků CZ, **`landing_page_configuration.query_string_template` na ad group se persistuje**), `image-upload --file` PNG 1200×1200 (1,3 MB), 18× `ad-create` chat_card (review approved 17/18 do ~3 min, poslední do ~10 min), `ad-preview` (iframe `ads.openai.com/previews/adprev_…?token=v1.…`), `conversion-events` stream (page_viewed z produkce, `contents[0].id` nese celou query vč. `oppref`), `conversion-check`, `landing-check`, `geo-search` (SK `1000201`). Žádný 429 (~45 zápisů).
 - ❌ `POST /ad_account/negative_keywords` → **404 `Invalid URL`** na self-serve, stejná třída jako `spend_limit_windows`. GET se tvářil jako prázdný seznam — ověřit, zda CLI 404 na GET tiše nepolyká.
-- ⚠️ `campaigns` (list) vrátil pár sekund po `campaign-update` **staré hodnoty**, `campaign-detail` čerstvé → po zápisu ověřovat detailem.
+- ⚠️ `campaigns` (list) vrátil pár sekund po `campaign-update` **staré hodnoty**, `campaign-detail` čerstvé → po zápisu ověřovat detailem. *(Doplněno 2026-09-07: i detail zaostává — viz druhá dávka, bod 9.)*
 - ⚠️ `campaign-detail --with-children` neukazuje reklamy pod ad groups (jen ad groups).
 - ⚠️ `landing-check` tiskne „Recommended robots.txt" i u čistého výsledku (šum).
 - Nápad: `campaign-plan/apply` z jednoho YAML (kampaň → ad groups s hints_file + utm_content → ads) místo 25 samostatných volání; hint po update „ověř detailem"; `conversion-events --json`.

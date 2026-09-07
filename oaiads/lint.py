@@ -193,13 +193,50 @@ def lint_times(start: int | None, end: int | None, findings: list) -> None:
         _add(findings, "error", "end_time must be after start_time.")
 
 
-def report(findings: list, strict: bool = True) -> bool:
-    """Print findings to stderr. Returns True when there are errors."""
+COLLAPSE_MIN = 3
+_FIRST_INT = re.compile(r"\d+")
+
+
+def collapse_warnings(warns: list[str], min_count: int = COLLAPSE_MIN) -> tuple[list[str], int]:
+    """Fold warnings that differ only in their first number into one line each.
+
+    A plan with hundreds of ads printed ~700 "creative.title is 34 chars — recommends ~16" lines and
+    buried the tree (seen live 2026-09-07). Soft recommendations are noise at that volume; errors
+    (spec limits) are never folded. Returns (lines, number_of_folded_groups).
+    """
+    groups: dict[str, list[tuple[str, int | None]]] = {}
+    for m in warns:
+        mm = _FIRST_INT.search(m)
+        key = (m[:mm.start()] + "N" + m[mm.end():]) if mm else m
+        groups.setdefault(key, []).append((m, int(mm.group()) if mm else None))
+    out: list[str] = []
+    folded = 0
+    for key, items in groups.items():
+        if len(items) < min_count:
+            out.extend(m for m, _ in items)
+            continue
+        folded += 1
+        nums = [n for _, n in items if n is not None]
+        out.append(f"{len(items)}× {key}" + (f"  [N up to {max(nums)}]" if nums else ""))
+    return out, folded
+
+
+def report(findings: list, strict: bool = True, collapse: bool = True) -> bool:
+    """Print findings to stderr (errors first, then warnings). Returns True when there are errors.
+
+    collapse: fold ≥ COLLAPSE_MIN warnings of one kind into a single counted line (plan-apply
+    --verbose-lint turns it off).
+    """
     from oaiads.formatting import _err
     errors = [m for lvl, m in findings if lvl == "error"]
     warns = [m for lvl, m in findings if lvl == "warn"]
     for m in errors:
         _err(f"✗ {m}")
+    folded = 0
+    if collapse:
+        warns, folded = collapse_warnings(warns)
     for m in warns:
         _err(f"⚠ {m}")
+    if folded:
+        _err(f"  ({folded} warning kind(s) folded into counted lines — plan-apply --verbose-lint lists each)")
     return bool(errors) if strict else False

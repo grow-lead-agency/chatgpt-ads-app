@@ -95,7 +95,15 @@ def money_flag(value: str | None, flag: str, minimum_micros: int | None = None) 
 
 
 def emit(data, args, human_fn=None) -> None:
-    """--json → raw JSON; otherwise the human renderer (or JSON as fallback)."""
+    """--json → raw JSON; otherwise the human renderer (or JSON as fallback).
+
+    Listings accept --limit N (dest list_limit): a client-side cap on the rows shown after the local
+    filters — paging is always automatic (--max-items caps how many rows are fetched).
+    """
+    cap = getattr(args, "list_limit", None)
+    if cap and isinstance(data, list) and len(data) > cap:
+        _err(f"(showing the first {cap} of {len(data)} rows — --limit; paging itself is automatic)")
+        data = data[:cap]
     if getattr(args, "json", False) or human_fn is None:
         _output_json(data)
     else:
@@ -128,14 +136,38 @@ def print_result(resp, args, done_msg: str) -> None:
 
 STALE_LIST_HINT = "Lists (campaigns/adgroups/ads) can lag a few seconds after a write — trust *-detail, not the list."
 
+# The detail itself is eventually consistent too: seen live 2026-09-07, `adgroup-pause` returned OK and
+# the immediate re-read still said `status: active` — the old "Verified via detail" line then read as a
+# failed write. So: re-read up to VERIFY_READS times with a pause, and say "verified" only when the
+# fields we expect actually match; otherwise say plainly that the detail still shows the old state.
+VERIFY_READS = 3
+VERIFY_DELAY_SECS = 1.5
+_VERIFY_SUMMARY_KEYS = ("name", "status", "budget", "bidding_type", "end_time", "review_status")
+
+
+def _verify_after_write(verify_path: str, expect: dict | None) -> tuple[dict | None, bool]:
+    """Re-read the detail until `expect` (subset of top-level fields) matches. Returns (detail, matched)."""
+    detail = None
+    for attempt in range(VERIFY_READS):
+        d = api._api_call("GET", verify_path, soft=True)
+        if isinstance(d, dict) and "_error" not in d:
+            detail = d
+            if not expect or all(d.get(k) == v for k, v in expect.items()):
+                return d, bool(expect)
+        if attempt < VERIFY_READS - 1:
+            api.time.sleep(VERIFY_DELAY_SECS)
+    return detail, False
+
 
 def run_write(method: str, path: str, body, args, done_msg: str, *, create: bool = False,
               idempotent: bool = False, note: str | None = None, extra_headers: dict | None = None,
-              verify_path: str | None = None):
+              verify_path: str | None = None, expect: dict | None = None):
     """Dry-run or execute a write and print the standard output. Returns response or None.
 
-    verify_path: after an executed update, GET this path and attach it as `_verified` (lists are
-    eventually consistent — verified live 2026-09-02 — so the detail is the source of truth).
+    verify_path: after an executed update, re-read this detail and attach it as `_verified` plus
+    `_verified_matches` (True only when `expect` — default: the body's name/status — matches). Lists AND
+    details are eventually consistent (seen live 2026-09-02 / 2026-09-07), hence the retries and the
+    careful wording.
     """
     key = getattr(args, "idempotency_key", None)
     # done_msg / note may be callables so a dry-run never triggers side effects
@@ -146,15 +178,26 @@ def run_write(method: str, path: str, body, args, done_msg: str, *, create: bool
     resp, _ = api.mutate(method, path, body, True, create=create, idempotent=idempotent,
                          idempotency_key=key, extra_headers=extra_headers)
     if verify_path and isinstance(resp, dict):
-        detail = api._api_call("GET", verify_path, soft=True)
-        if isinstance(detail, dict) and "_error" not in detail:
+        if expect is None and isinstance(body, dict):
+            expect = {k: body[k] for k in ("name", "status") if body.get(k) is not None}
+        detail, matched = _verify_after_write(verify_path, expect)
+        if detail is not None:
             resp["_verified"] = detail
+            resp["_verified_matches"] = matched
+            resp["_verified_expect"] = expect or {}
     print_result(resp, args, done_msg() if callable(done_msg) else done_msg)
     if verify_path and not getattr(args, "json", False):
         v = resp.get("_verified") if isinstance(resp, dict) else None
         if v:
-            summary = {k: v.get(k) for k in ("name", "status", "budget", "bidding_type", "end_time", "review_status") if k in v}
-            print(f"  Verified via detail: {json.dumps(summary, ensure_ascii=False, default=str)}")
+            summary = json.dumps({k: v.get(k) for k in _VERIFY_SUMMARY_KEYS if k in v}, ensure_ascii=False, default=str)
+            if resp.get("_verified_matches"):
+                print(f"  Verified via detail ({', '.join(resp['_verified_expect'])} match): {summary}")
+            elif not resp.get("_verified_expect"):
+                print(f"  Detail right after the write (may still lag a few seconds): {summary}")
+            else:
+                print(f"  ⚠ Detail still shows the OLD state after {VERIFY_READS} reads (~{VERIFY_DELAY_SECS * (VERIFY_READS - 1):g} s): {summary}")
+                print("    The write itself returned OK — the API is eventually consistent. Re-check with the *-detail command in a few seconds "
+                      "before retrying anything.")
         _err(f"  ℹ {STALE_LIST_HINT}")
     return resp
 
@@ -185,7 +228,8 @@ def state_change(kind: str, path_prefix: str, object_id: str, action: str, args)
                    note=f"Activating starts delivery (and spend) as soon as review/parents allow.")
         return
     run_write("POST", path, None, args, f"{kind} {object_id}: {action} done.", idempotent=True,
-              verify_path=f"{path_prefix}/{object_id}")
+              verify_path=f"{path_prefix}/{object_id}",
+              expect={"status": {"activate": "active", "pause": "paused", "archive": "archived"}[action]})
 
 
 def brief_error(resp) -> str | None:

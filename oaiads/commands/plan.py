@@ -327,6 +327,22 @@ def _sync_count(sync: dict) -> int:
     return (1 if sync.get("campaign") else 0) + len(sync.get("ad_groups") or {}) + len(sync.get("ads") or {})
 
 
+# Rough run-time model for the dry-run header: writes go sequentially (~0.5 s each incl. latency) and the
+# CLI paces itself at 80 % of 600 req/min per endpoint (8/s) — whichever dominates.
+_SECS_PER_WRITE = 0.5
+_PACED_WRITES_PER_SEC = 600 * 0.8 / 60
+
+
+def estimate_run_seconds(n_writes: int, per_endpoint_max: int) -> float:
+    return max(n_writes * _SECS_PER_WRITE, per_endpoint_max / _PACED_WRITES_PER_SEC)
+
+
+def fmt_duration(seconds: float) -> str:
+    if seconds < 90:
+        return f"~{int(round(seconds))} s"
+    return f"~{int(round(seconds / 60))} min"
+
+
 # ---------------------------------------------------------------------------
 # Command
 # ---------------------------------------------------------------------------
@@ -413,9 +429,17 @@ def cmd_plan_apply(args) -> None:
         "sync": {"campaign": sync["campaign"], "ad_groups": sync["ad_groups"], "ads": sync["ads"], "unreadable": sync["unreadable"]},
         "state_file": state_path,
     }
-    errors = lint.report(findings)
+    errors = lint.report(findings, collapse=not getattr(args, "verbose_lint", False))
     if errors:
         _die("Lint errors — fix the plan first (nothing was sent).")
+
+    n_new_groups = len([g for g in groups if g["key"] not in state["created"]["ad_groups"]])
+    n_new_ads = len([a for g in groups for a in g["ads"] if a["key"] not in state["created"]["ads"]])
+    n_uploads = len({(a["pending"].get("file") or a["pending"].get("url")) for g in groups for a in g["ads"]
+                     if a["pending"] and (a["pending"].get("file") or a["pending"].get("url")) not in state["created"]["files"]})
+    est = fmt_duration(estimate_run_seconds(n_writes + n_uploads, max(n_new_ads, n_new_groups, 1)))
+    tree["image_uploads_remaining"] = n_uploads
+    tree["estimated_run_time"] = est
 
     def diff_note(d: dict | None) -> str:
         return f"  ↻ {'updates' if update else 'differs from plan'}: {', '.join(sorted(d))}" if d else ""
@@ -425,9 +449,15 @@ def cmd_plan_apply(args) -> None:
             _output_json({"executed": False, "plan": tree, "findings": [{"level": l, "message": m} for l, m in findings]})
         else:
             cur = api.cached_currency()
-            print(f"PLAN {os.path.basename(args.file)} — dry-run, nothing sent. {n_writes} write(s) remaining "
-                  f"({n_creates} create(s)" + (f", {n_updates} update(s)" if update else "")
-                  + f"; {len(groups)} ad group(s), {n_ads} ad(s)); state: {state_path}")
+            # Summary FIRST — with hundreds of objects the tree below is long (seen live: ~500 lines).
+            print(f"PLAN {os.path.basename(args.file)} — dry-run, nothing sent.")
+            print(f"  create:   {0 if campaign_id else 1} campaign, {n_new_groups} ad group(s), {n_new_ads} ad(s) = {n_creates} write(s)"
+                  + (f" + {n_uploads} image upload(s)" if n_uploads else ""))
+            print(f"  existing: {n_existing}" + (" (✓ skipped)" if n_existing else "")
+                  + (f", {n_updates} differ from the plan (↻" + (" → updated)" if update else " → add --update-existing)") if n_updates else ""))
+            print(f"  writes:   {n_writes} total, rough run time {est} (sequential; the CLI paces at 80 % of the rate limit)")
+            print(f"  state:    {state_path}")
+            print(f"tree ({len(groups)} ad group(s), {n_ads} ad(s)):")
             if campaign_id:
                 print(f"campaign: attach to existing {campaign_id}" + diff_note(sync["campaign"]))
             else:

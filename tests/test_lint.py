@@ -78,3 +78,20 @@ def test_recommended_lengths_warn_but_pass():
     f2 = lint.lint_creative({"type": "chat_card", "title": "Kurz vibe coding", "body": "Postav si appku bez kódování.",
                              "target_url": "https://example.com/p", "file_id": "file_1"})
     assert not [m for lvl, m in f2 if "recommends" in m]
+
+
+def test_report_folds_repeated_warnings_of_one_kind(capsys):
+    """#10 (live 2026-09-07): a plan with hundreds of ads printed ~700 length warnings and buried the tree."""
+    findings = [("warn", f"creative.title is {n} chars — OpenAI recommends ~16; longer headlines get truncated.") for n in (20, 25, 40, 18)]
+    findings += [("warn", "creative.body is 40 chars — OpenAI recommends ~32; keep one concrete benefit."),
+                 ("error", "Ad name must be 3–1000 chars with a non-space character (got 1).")]
+    assert lint.report(findings) is True
+    err = capsys.readouterr().err
+    assert "⚠ 4× creative.title is N chars — OpenAI recommends ~16" in err and "[N up to 40]" in err
+    assert "creative.title is 25 chars" not in err
+    assert "⚠ creative.body is 40 chars" in err, "a single warning is printed as-is"
+    assert "✗ Ad name must be" in err, "errors are never folded"
+    assert "1 warning kind(s) folded" in err
+    lint.report(findings, collapse=False)
+    err = capsys.readouterr().err
+    assert err.count("creative.title is ") == 4 and "×" not in err

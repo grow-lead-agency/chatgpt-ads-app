@@ -2,6 +2,22 @@
 
 Všechny podstatné změny v tomto projektu. Formát vychází z [Keep a Changelog](https://keepachangelog.com/), verzování je [SemVer](https://semver.org/) (verze žije v `oaiads/__init__.py`).
 
+## [1.4.1] — 2026-09-07 — Druhá dávka nálezů (kampaň o stovkách objektů) 🔧
+
+Z nasazení kampaně se stovkami sestav a reklam přes `plan-apply` ve v1.4.0. Detail v `docs/api-notes.md → Poznámky z ostrého provozu → 2026-09-07, druhá dávka`.
+
+### Opraveno
+- **Ověření po zápisu tvrdilo víc, než API dovoluje**: `adgroup-pause` prošel, ale okamžitý re-read detailu ještě vrátil `status: active` a řádek „Verified via detail“ vypadal jako neúspěšný zápis (u všech pauznutých sestav). Detail je eventually consistent stejně jako listy. Teď CLI detail čte až 3× s pauzou 1,5 s a „Verified via detail (status match)“ napíše jen když očekávaná pole (u `*-activate/pause/archive` `status`, u `*-update` `name`/`status` z requestu) skutečně sedí; jinak řekne „⚠ Detail still shows the OLD state after 3 reads … re-check with *-detail“. `--json` nese `_verified_matches` a `_verified_expect`.
+- **Lint tiskl stejné varování stokrát** (u plánu se stovkami reklam ~700 řádků o délce titulku/popisku, strom se v nich ztratil). Varování jednoho druhu (liší se jen číslem) se od 3 kusů skládají do jednoho řádku s počtem a maximem (`⚠ 231× creative.title is N chars — … [N up to 40]`); chyby (spec limity) se neskládají nikdy. `plan-apply --verbose-lint` vypíše každé zvlášť.
+
+### Přidáno
+- **Souhrn dry-runu `plan-apply` před stromem**: kolik kampaní / sestav / reklam vznikne, kolik obrázků se nahraje, kolik objektů už existuje (a kolik se liší), počet zápisů celkem a **hrubý odhad délky běhu** (sekvenčně ~0,5 s na zápis, nebo pacing na 80 % limitu, co je větší). V `--json` jako `image_uploads_remaining` a `estimated_run_time`.
+- **`--limit N` u výpisů** `campaigns` / `adgroups` / `ads`: klientský strop na počet řádků po lokálních filtrech (stránkování zůstává automatické; `--max-items` omezuje, kolik se stáhne). Dřív argparse chyba.
+
+### Dokumentace
+- README: **tvar `--json` výstupu** per skupina příkazů (výpisy a insights = holé pole, detaily/`pulse`/`conversion-check` = objekt, zápisy = `{"executed": …}` / odpověď API) — na `insights --json` se při psaní automatu narazilo (`'list' object has no attribute 'get'`).
+- api-notes: druhá dávka nálezů + co se ve v1.4.0 potvrdilo v provozu (`plan-apply` se stovkami objektů bez 429, klasifikace serving issues, čekání na vlastní rate-limit rozpočet při souběžném běhu není chyba).
+
 ## [1.4.0] — 2026-09-07 — Nálezy z týdne ostrého provozu 🔧
 
 Reakce na osm nálezů z prvního týdne provozu na dvou účtech (optimalizace pilotů, příprava větší kampaně). Detail v `docs/api-notes.md → Poznámky z ostrého provozu → 2026-09-07`.
