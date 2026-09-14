@@ -99,11 +99,13 @@ def _print_banner() -> None:
 
 
 def _cmd(sub, name: str, func, help_: str, *, write: bool = False):
-    """Add a subcommand; writes get --confirm (default = dry-run) and --idempotency-key."""
+    """Add a subcommand; writes get --confirm (default = dry-run), --idempotency-key, and ticket gate args."""
     sp = sub.add_parser(name, help=help_ + (" [write]" if write else ""))
     if write:
         sp.add_argument("--confirm", action="store_true", help="Actually send the write (default: dry-run plan only)")
         sp.add_argument("--idempotency-key", help="Reuse a key to retry the SAME request safely (creates get one automatically)")
+        sp.add_argument("--ticket", help="GrowLead ticket ID (interventions/claim)")
+        sp.add_argument("--why", help="GrowLead intervention reason (min 10 chars)")
     sp.add_argument("--json", action="store_true", help="JSON output")
     sp.set_defaults(func=func)
     return sp
@@ -575,6 +577,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _dispatch(args) -> None:
+    """GrowLead patch (ticket gate): preflight → command → postflight.
+
+    Dry-run commands pass straight through (preflight returns None). With
+    --confirm the ticket is verified first; nothing runs if the gate refuses.
+    Postflight always runs after a confirmed command, even when it raised."""
+    from oaiads.interventions import preflight, postflight
+    ctx = preflight(args)
+    ok = False
+    try:
+        args.func(args)
+        ok = True
+    finally:
+        if ctx is not None:
+            postflight(ctx, ok)
+
+
 def main() -> None:
     if hasattr(signal, "SIGPIPE"):
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -586,7 +605,7 @@ def main() -> None:
         api.check_config()
         if len(api.configured_accounts()) > 1 and not getattr(args, "json", False):
             print(f"[account: {api.ACTIVE_ACCOUNT}]", file=sys.stderr)
-    args.func(args)
+    _dispatch(args)
 
 
 if __name__ == "__main__":

@@ -170,6 +170,7 @@ Plán umí i `"campaign": {"id": "cmpn_existing"}` (jen přidat sestavy a reklam
 ## Konvence použití
 
 - **Zápisy jsou defaultně dry-run**: příkaz vytiskne přesný request, který by poslal, a nic neodešle. `--confirm` provede. API nemá server-side `validate_only` pro jednotlivé objekty, takže dry-run = lokální lint + plán. Výjimky: `image-upload`/`file-upload` zapisují rovnou (jen média, žádná útrata); `bulk-submit` bez `--confirm` pošle **validační job** (`validate_only: true`, oficiálně nic nemění).
+- **GrowLead patch (ticket gate)**: skutečné zápisy (`--confirm`) vyžadují schválený ticket. Pomocí `GL_ADS_TICKET_GATE` lze nastavit režim: `strict` (default, ověřuje ticket v gl-ads přes API, vyžaduje `--ticket` a `--why`), `lite` (zapíše lokální deníček, ticket nepovinný), nebo `off` (jen varování). Odepření zápisu z důvodu gate (chybí ticket nebo důvod) vrací exit kód 2, technická chyba (gl-ads nedostupné nebo chybějící účet) vrací 3. Dry-run gate nevyžaduje. Výjimka: uploady nevyžadují ticket nikdy (jen média, žádná útrata).
 - **Vše vzniká `paused`** (`--status` default). Aktivace jen přes `*-activate` / `--status active` + `--confirm`.
 - **Archivace je nevratná** (delete neexistuje). `*-archive` odmítne nezapauzovaný objekt bez `--force`.
 - **Peníze v měně účtu** (`account` → `currency_code`, typicky USD). Flagy berou jednotky měny (`--lifetime-budget 250`), API dostane micros (×1 000 000). `--max-bid` je **per event**; pro CPM kampaně je pohodlnější `--max-cpm 40` (= 40 000 micros per impression). U oCPC je `--max-bid` CPA bid.

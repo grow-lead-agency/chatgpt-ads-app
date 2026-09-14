@@ -36,8 +36,10 @@ def isolated_env(monkeypatch, tmp_path):
     """Redirect persistent state to a temp dir, fake credentials, never sleep."""
     monkeypatch.setattr(api, "USAGE_DIR", str(tmp_path / ".usage"))
     for var in list(os.environ):
-        if var.startswith("OPENAI_ADS_") or var.startswith("OAIADS_"):
+        if var.startswith("OPENAI_ADS_") or var.startswith("OAIADS_") or var.startswith("GL_ADS_"):
             monkeypatch.delenv(var, raising=False)   # the developer's .env must not leak into tests
+    monkeypatch.setenv("GL_ADS_TICKET_GATE", "off")
+    monkeypatch.setenv("GL_ADS_TEST_SILENCE_OFF_WARNING", "1")
     monkeypatch.setenv("OPENAI_ADS_API_KEY", "sk-FAKETESTKEY1234567890")
     api.set_account(None)
     monkeypatch.setattr(api.time, "sleep", lambda s: None)
