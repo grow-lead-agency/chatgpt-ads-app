@@ -396,6 +396,13 @@ def _api_call(
     family = endpoint_family(method, path)
     _budget_wait_and_record(family)
 
+    if method.upper() != "GET":
+        try:
+            from oaiads.interventions import mark_write_attempt
+            mark_write_attempt()
+        except ImportError:
+            pass
+
     try:
         resp = requests.request(
             method, url, params=params, json=json_body, files=files, data=data,
@@ -446,10 +453,18 @@ def _api_call(
     if not resp.content:
         return {}
     try:
-        return resp.json()
+        parsed = resp.json()
     except ValueError:
         _err(f"ERROR: Non-JSON response from {method} {path} (HTTP {resp.status_code})")
         _die(_redact(resp.text[:500]))
+    
+    if method.upper() != "GET":
+        try:
+            from oaiads.interventions import record_result
+            record_result(parsed)
+        except ImportError:
+            pass
+    return parsed
 
 
 def _retry_or_die(method, path, params, json_body, files, data, extra_headers, idempotent,

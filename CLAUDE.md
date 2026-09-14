@@ -53,6 +53,7 @@ Full flags: README.md command tables, or `--help` per command.
 ## Safety
 
 - **Writes default to dry-run** — the API has no `validate_only` for single objects, so the dry-run is local lint + the exact request plan; nothing is sent. `--confirm` executes. Exceptions: `image-upload`/`file-upload` write directly (media only, no spend), `bulk-submit` dry-run sends a server-side `validate_only` job (documented, changes nothing).
+- **GrowLead patch: ticket gate**: confirmed writes (`--confirm`) require a ticket. Controlled by `GL_ADS_TICKET_GATE`: `strict` (default: verifies ticket via gl-ads API, requires `--ticket` and `--why`), `lite` (appends to local journal file, ticket optional), or `off` (dev/test warning only). Exit 2 on gate refusal, exit 3 on technical failure (API unreachable, missing account ID). Dry-runs ignore the gate. Exception: uploads never get a ticket context (media only).
 - **Everything starts `paused`** (`--status` default). Activation only via `*-activate` / `--status active` with `--confirm`.
 - **Archive is irreversible** (no delete, no restore). `*-archive` refuses non-paused objects without `--force`.
 - **Creates carry an `Idempotency-Key`** (auto-generated, printed) → transient failures are retried safely; writes without one are never auto-retried (the CLI says the write may have landed).
