@@ -33,7 +33,8 @@ z upstreamu) a `make type` (pyrefly je vlna 4).
 
 **CI nikdy nevolá reálné OpenAI Ads API:** workflow nemá žádná tajemství (`permissions: contents: read`,
 `persist-credentials: false`), testy nahrazují `requests`. Runner je natvrdo `ubuntu-latest`, protože repo je
-veřejné a org proměnná `CI_RUNNER` míří na self-hosted runner. Nový test nesmí sahat na síť ani na credentials;
+veřejné a org proměnná `CI_RUNNER` míří na self-hosted runner. Pytest běží s `--disable-socket` (pytest-socket, jen v `pyproject.toml`): test,
+který by obešel mock `requests` a sáhl na síť, spadne na `SocketBlockedError`. Nový test nesmí sahat na síť ani na credentials;
 kdyby musel, dostane marker `integration` a do CI nepatří.
 
 **gitleaks:** `.gitleaksignore` drží jen ověřené false positive podle fingerprintu (dnes fake klíč v testu
