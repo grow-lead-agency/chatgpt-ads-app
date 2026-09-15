@@ -1,0 +1,48 @@
+# GrowLead fork tooling (GRO-1302, Python Standard v1, adopce vlna 1).
+# Upstream faborsky/chatgpt-ads-app tento soubor nemá. Runtime pořád čte requirements.txt
+# (setup.sh / run.sh), proto [project].dependencies MUSÍ zrcadlit requirements.txt 1:1;
+# hlídá to .github/scripts/check_requirements_sync.py v CI i v `make check`.
+# Zdroj pravdy pro CI je uv.lock.
+
+[project]
+name = "chatgpt-ads-app"
+# Není distribuovaný balík. Verze aplikace žije v oaiads/__init__.py (__version__).
+version = "0.0.0"
+description = "ChatGPT Ads CLI (fork faborsky/chatgpt-ads-app, GrowLead growlead-safety)"
+readme = "README.md"
+# Standard = 3.12 (upstream uvádí 3.9+, CI i lock drží 3.12).
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32,<3",
+    "python-dotenv>=1.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    # Stejný rozsah jako upstream requirements-dev.txt; pytest 9 až ve vlně 2.
+    "pytest>=8,<9",
+    "ruff==0.16.7",
+    "pip-audit==2.10.1",
+]
+
+[tool.uv]
+# Aplikace se spouští z rootu (chatgpt_ads_cli.py), nic se nebuildí ani neinstaluje.
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Vlna 1: jen chyby, které znamenají rozbitý kód (syntax, nedefinovaná jména).
+# Plná pravidla standardu přijdou ve vlně 2 přes baseline, NE přes `ruff --fix` upstream kódu.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+# filterwarnings = ["error"] zatím NE: upstream test tests/test_api.py::test_usage_files_never_contain_key
+# neuzavírá soubor (open(path).read()) -> ResourceWarning. Ratchet ve vlně 2 (oprava upstreamu).
+markers = [
+    "integration: needs network or real credentials (never part of CI; none exist today)",
+]
